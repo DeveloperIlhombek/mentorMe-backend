@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_tenant_session, require_admin, require_teacher, get_optional_branch_filter
+from app.core.dependencies import get_tenant_session, require_admin, require_inspector, require_teacher, get_optional_branch_filter
 from app.core.exceptions import StudentNotFound
 from app.core.security import hash_password
 from app.models.tenant import Branch, Teacher, User
@@ -50,33 +50,37 @@ class TeacherUpdate(BaseModel):
 # ─── Yordamchi ───────────────────────────────────────────────────────
 async def _teacher_dict(teacher: Teacher, user: User) -> dict:
     return {
-        "id":            str(teacher.id),
-        "user_id":       str(teacher.user_id),
-        "first_name":    user.first_name,
-        "last_name":     user.last_name,
-        "phone":         user.phone,
-        "email":         user.email,
-        "avatar_url":    user.avatar_url,
-        "is_active":     teacher.is_active,
-        "subjects":      teacher.subjects or [],
-        "bio":           teacher.bio,
-        "salary_type":   teacher.salary_type,
-        "salary_amount": float(teacher.salary_amount) if teacher.salary_amount else None,
-        "branch_id":     str(teacher.branch_id) if teacher.branch_id else None,
-        "hired_at":      teacher.hired_at.isoformat() if teacher.hired_at else None,
-        "created_at":    teacher.created_at.isoformat(),
+        "id":               str(teacher.id),
+        "user_id":          str(teacher.user_id),
+        "first_name":       user.first_name,
+        "last_name":        user.last_name,
+        "phone":            user.phone,
+        "email":            user.email,
+        "avatar_url":       user.avatar_url,
+        "is_active":        teacher.is_active,
+        "is_approved":      teacher.is_approved,
+        "created_by":       str(teacher.created_by) if teacher.created_by else None,
+        "created_by_role":  teacher.created_by_role,
+        "subjects":         teacher.subjects or [],
+        "bio":              teacher.bio,
+        "salary_type":      teacher.salary_type,
+        "salary_amount":    float(teacher.salary_amount) if teacher.salary_amount else None,
+        "branch_id":        str(teacher.branch_id) if teacher.branch_id else None,
+        "hired_at":         teacher.hired_at.isoformat() if teacher.hired_at else None,
+        "created_at":       teacher.created_at.isoformat(),
     }
 
 
 # ─── Endpointlar ─────────────────────────────────────────────────────
 @router.get("")
 async def list_teachers(
-    page:      int           = Query(1, ge=1),
-    per_page:  int           = Query(20, ge=1, le=100),
-    search:    Optional[str] = Query(None),
-    is_active: Optional[bool]= Query(None),
-    db: AsyncSession         = Depends(get_tenant_session),
-    _:  dict                 = Depends(require_teacher),
+    page:        int           = Query(1, ge=1),
+    per_page:    int           = Query(20, ge=1, le=100),
+    search:      Optional[str] = Query(None),
+    is_active:   Optional[bool]= Query(None),
+    is_approved: Optional[bool]= Query(None),
+    db: AsyncSession           = Depends(get_tenant_session),
+    _:  dict                   = Depends(require_teacher),
     branch_filter: Optional[str] = Depends(get_optional_branch_filter),
 ):
     stmt = (
@@ -85,6 +89,8 @@ async def list_teachers(
     )
     if is_active is not None:
         stmt = stmt.where(Teacher.is_active == is_active)
+    if is_approved is not None:
+        stmt = stmt.where(Teacher.is_approved == is_approved)
     if branch_filter:
         stmt = stmt.where(Teacher.branch_id == uuid.UUID(branch_filter))
     if search:
@@ -104,9 +110,16 @@ async def list_teachers(
 async def create_teacher(
     data: TeacherCreate,
     db:   AsyncSession = Depends(get_tenant_session),
-    _:    dict         = Depends(require_admin),
+    tkn:  dict         = Depends(require_inspector),
 ):
-    # User yaratish
+    caller_role = tkn.get("role", "")
+    caller_id   = uuid.UUID(tkn["sub"])
+
+    # Admin/super_admin tomonidan yaratilsa — darhol tasdiqlangan
+    # Inspector tomonidan yaratilsa — admin tasdiqlashini kutadi
+    is_approved = caller_role in ("admin", "super_admin")
+
+    # User yaratish — pending bo'lsa is_active=False
     user = User(
         first_name=data.first_name,
         last_name=data.last_name,
@@ -114,7 +127,7 @@ async def create_teacher(
         email=data.email,
         role="teacher",
         password_hash=hash_password("Teacher123!"),
-        is_active=True,
+        is_active=is_approved,  # Pending holatda login qila olmaydi
     )
     db.add(user)
     await db.flush()
@@ -127,11 +140,14 @@ async def create_teacher(
         bio=data.bio,
         salary_type=data.salary_type,
         salary_amount=data.salary_amount,
+        is_approved=is_approved,
+        created_by=caller_id,
+        created_by_role=caller_role,
     )
     db.add(teacher)
     await db.commit()
 
-    return ok(await _teacher_dict(teacher, user))
+    return ok(await _teacher_dict(teacher, user), {"pending_approval": not is_approved})
 
 
 @router.get("/{teacher_id}")
@@ -203,6 +219,71 @@ async def delete_teacher(
         if user:
             user.is_active = False
         await db.commit()
+
+
+@router.get("/pending")
+async def list_pending_teachers(
+    db: AsyncSession = Depends(get_tenant_session),
+    _:  dict         = Depends(require_admin),
+):
+    """Tasdiqlashni kutayotgan o'qituvchilar ro'yxati (faqat admin ko'radi)."""
+    stmt = (
+        select(Teacher, User)
+        .join(User, Teacher.user_id == User.id)
+        .where(Teacher.is_approved == False)
+        .order_by(Teacher.created_at.desc())
+    )
+    rows = (await db.execute(stmt)).all()
+    return ok([await _teacher_dict(t, u) for t, u in rows])
+
+
+@router.post("/{teacher_id}/approve")
+async def approve_teacher(
+    teacher_id: uuid.UUID,
+    db:  AsyncSession = Depends(get_tenant_session),
+    tkn: dict         = Depends(require_admin),
+):
+    """Admin o'qituvchini tasdiqlaydi — is_approved=True, is_active=True."""
+    stmt = (
+        select(Teacher, User)
+        .join(User, Teacher.user_id == User.id)
+        .where(Teacher.id == teacher_id)
+    )
+    row = (await db.execute(stmt)).first()
+    if not row:
+        from app.core.exceptions import EduSaaSException
+        raise EduSaaSException(404, "TEACHER_NOT_FOUND", "O'qituvchi topilmadi")
+
+    teacher, user = row
+    teacher.is_approved = True
+    user.is_active      = True
+    teacher.is_active   = True
+    await db.commit()
+    return ok(await _teacher_dict(teacher, user))
+
+
+@router.post("/{teacher_id}/reject")
+async def reject_teacher(
+    teacher_id: uuid.UUID,
+    db:  AsyncSession = Depends(get_tenant_session),
+    tkn: dict         = Depends(require_admin),
+):
+    """Admin o'qituvchini rad etadi — user va teacher o'chiriladi."""
+    stmt = (
+        select(Teacher, User)
+        .join(User, Teacher.user_id == User.id)
+        .where(Teacher.id == teacher_id)
+    )
+    row = (await db.execute(stmt)).first()
+    if not row:
+        from app.core.exceptions import EduSaaSException
+        raise EduSaaSException(404, "TEACHER_NOT_FOUND", "O'qituvchi topilmadi")
+
+    teacher, user = row
+    await db.delete(teacher)
+    await db.delete(user)
+    await db.commit()
+    return ok({"deleted": str(teacher_id)})
 
 
 @router.get("/{teacher_id}/salary-report")

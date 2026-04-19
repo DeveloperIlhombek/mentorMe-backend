@@ -1,6 +1,13 @@
 """
 app/main.py  —  FastAPI asosiy fayl.
 """
+import sys
+import asyncio
+
+# Windows + Python 3.13 uchun asyncpg event loop fix
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -23,6 +30,13 @@ except Exception:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(f"🚀 EduSaaS v{settings.APP_VERSION} ishga tushdi")
+    # Redis ulanishini tekshirish (birinchi chaqiruvda initsializatsiya)
+    from app.core.invite_store import _get_redis
+    r = await _get_redis()
+    if r:
+        print("✅ Redis ulandi")
+    else:
+        print("⚠️  Redis yo'q — in-memory fallback ishlatiladi (development)")
     if HAS_BOT:
         from app.webhooks.bot import setup_webhook
         await setup_webhook()
@@ -31,6 +45,8 @@ async def lifespan(app: FastAPI):
     if HAS_BOT:
         from app.webhooks.bot import teardown_webhook
         await teardown_webhook()
+    from app.core.invite_store import close_redis
+    await close_redis()
 
 
 app = FastAPI(

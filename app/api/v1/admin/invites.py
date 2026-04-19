@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 from app.core.dependencies import get_tenant_session, require_admin
 from app.core.invite_store import store_invite
 from app.schemas import ok
@@ -101,17 +102,17 @@ async def generate_invite(
 
 @router.get("/info/{code}")
 async def get_invite_info(
-    code:       str,
-    tenant:     str,
-    db:         AsyncSession = Depends(get_tenant_session),
+    code:   str,
+    tenant: str,
 ):
     """
-    Invite kod haqida ma'lumot olish (login/onboarding sahifasida ishlatilinadi).
-    Autentifikatsiya talab qilinmaydi.
+    Invite kod haqida ma'lumot olish.
+    ⚠️  PUBLIC endpoint — autentifikatsiya talab qilinmaydi.
+    Onboarding sahifasida ro'yxatdan o'tmasdan oldin chaqiriladi.
     """
     from app.core.invite_store import get_invite
 
-    raw = await get_invite(tenant, code)
+    raw = await get_invite(tenant, code.strip().upper())
     if not raw:
         raise HTTPException(status_code=404, detail="Kod topilmadi yoki muddati o'tgan")
 
@@ -122,19 +123,27 @@ async def get_invite_info(
         role     = raw
         group_id = None
 
-    # Guruh nomini olish
+    # Guruh nomini olish — tenant schemadan
     group_name = None
     if group_id:
-        from app.models.tenant.group import Group
-        g = (await db.execute(
-            select(Group).where(Group.id == uuid.UUID(group_id))
-        )).scalar_one_or_none()
-        if g:
-            group_name = f"{g.name} ({g.subject})"
+        try:
+            schema = f"tenant_{tenant.replace('-', '_')}"
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import text as _text
+                await session.execute(_text(f'SET search_path TO "{schema}", public'))
+                from app.models.tenant.group import Group
+                g = (await session.execute(
+                    select(Group).where(Group.id == uuid.UUID(group_id))
+                )).scalar_one_or_none()
+                if g:
+                    group_name = f"{g.name} ({g.subject})"
+        except Exception:
+            pass  # Guruh nomi topilmasa davom et
 
     return ok({
         "role":       role,
         "group_id":   group_id,
         "group_name": group_name,
         "valid":      True,
+        "tenant":     tenant,
     })

@@ -336,10 +336,14 @@ async def get_branch_dashboard(
     )).all()
 
     recent_payments = [{
-        "student_name":   f"{u.first_name} {u.last_name or ''}".strip(),
-        "amount":         float(p.amount),
-        "payment_method": p.payment_method,
-        "paid_at":        p.paid_at.isoformat() if p.paid_at else p.created_at.isoformat(),
+        "id":                str(p.id),
+        "student_name":      f"{u.first_name} {u.last_name or ''}".strip(),
+        "student_first_name": u.first_name,
+        "student_last_name":  u.last_name,
+        "amount":            float(p.amount),
+        "payment_method":    p.payment_method,
+        "created_at":        p.created_at.isoformat(),
+        "paid_at":           p.paid_at.isoformat() if p.paid_at else p.created_at.isoformat(),
     } for p, s, u in recent_payments_rows]
 
     # ── Yangi o'quvchilar (bu oy) ──────────────────────────────────

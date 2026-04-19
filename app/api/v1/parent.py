@@ -102,17 +102,31 @@ async def link_invite(
     code           = body.invite_code.strip().upper()
 
     # Kodni olish (Redis yoki in-memory fallback)
-    student_id_str = await get_invite(tenant_slug, code)
-    if not student_id_str:
+    stored_value = await get_invite(tenant_slug, code)
+    if not stored_value:
         raise HTTPException(status_code=404, detail="Kod topilmadi yoki muddati o'tgan")
 
-    student_id = uuid.UUID(student_id_str)
+    # stored_value: UUID string (parent linking) yoki "role:uuid" (universal invite)
+    # Parent linking uchun — faqat UUID
+    try:
+        student_id = uuid.UUID(stored_value)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Bu kod parent linking uchun emas. PRN-XXXXXX formatidagi kod kiriting."
+        )
 
     # Studentni topish
     stmt    = select(Student).where(Student.id == student_id)
     student = (await db.execute(stmt)).scalar_one_or_none()
     if not student:
         raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+
+    # Ota-onaning o'zi users jadvalida borligini tekshirish
+    parent_stmt = select(User).where(User.id == parent_user_id)
+    parent_user = (await db.execute(parent_stmt)).scalar_one_or_none()
+    if not parent_user:
+        raise HTTPException(status_code=404, detail="Ota-ona foydalanuvchisi topilmadi")
 
     # Ota-onani bog'lash
     student.parent_id = parent_user_id

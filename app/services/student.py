@@ -72,12 +72,17 @@ async def _row_to_dict(db: AsyncSession, student: Student, user: User) -> dict:
         "language_code": user.language_code,
         "balance": float(student.balance),
         "is_active": student.is_active,
+        "is_approved": student.is_approved,
+        "pending_delete": student.pending_delete,
+        "created_by": str(student.created_by) if student.created_by else None,
         "is_verified": user.is_verified,
         "enrolled_at": student.enrolled_at.isoformat() if student.enrolled_at else None,
         "date_of_birth": student.date_of_birth.isoformat() if student.date_of_birth else None,
         "gender": student.gender,
         "parent_phone": student.parent_phone,
         "notes": student.notes,
+        "payment_day": student.payment_day,
+        "monthly_fee": float(student.monthly_fee) if student.monthly_fee else None,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "groups": groups,
         "gamification": {
@@ -165,6 +170,10 @@ async def get_students(
             "email": user.email,
             "balance": float(student.balance),
             "is_active": student.is_active,
+            "is_approved": student.is_approved,
+            "pending_delete": student.pending_delete,
+            "payment_day": student.payment_day,
+            "monthly_fee": float(student.monthly_fee) if student.monthly_fee else None,
             "enrolled_at": student.enrolled_at.isoformat() if student.enrolled_at else None,
             "date_of_birth": student.date_of_birth.isoformat() if student.date_of_birth else None,
             "gender": student.gender,
@@ -199,7 +208,9 @@ async def create(
     Yangi o'quvchi qo'shish.
     Teacher yaratsa is_approved=False → admin tasdiqlamagunicha nofaol.
     """
-    is_approved = role == "admin"
+    # Admin va inspektor yaratsa — darhol tasdiqlangan
+    # Teacher yaratsa — admin yoki inspektor tasdiqlashini kutadi
+    is_approved = role in ("admin", "super_admin", "inspector")
 
     # 1. User — teacher yaratsa is_active=False (admin tasdiqlaganda True bo'ladi)
     user = User(
@@ -290,6 +301,74 @@ async def update(
     if getattr(data, 'telegram_id', None)      is not None: user.telegram_id        = data.telegram_id
     if getattr(data, 'telegram_username', None) is not None: user.telegram_username = data.telegram_username
 
+    await db.commit()
+    return await get_by_id(db, student_id)
+
+
+async def approve(
+    db: AsyncSession,
+    student_id: uuid.UUID,
+    approved_by: Optional[uuid.UUID] = None,
+) -> dict:
+    """
+    O'quvchini tasdiqlash: is_approved=True, is_active=True.
+    """
+    stmt = (
+        select(Student, User)
+        .join(User, Student.user_id == User.id)
+        .where(Student.id == student_id)
+    )
+    row = (await db.execute(stmt)).first()
+    if not row:
+        raise StudentNotFound()
+
+    student, user = row
+    student.is_approved = True
+    student.is_active   = True
+    user.is_active      = True
+    await db.commit()
+    return await get_by_id(db, student_id)
+
+
+async def reject(
+    db: AsyncSession,
+    student_id: uuid.UUID,
+) -> dict:
+    """
+    O'quvchini rad etish — user va student yozuvlarini o'chirish.
+    """
+    stmt = (
+        select(Student, User)
+        .join(User, Student.user_id == User.id)
+        .where(Student.id == student_id)
+    )
+    row = (await db.execute(stmt)).first()
+    if not row:
+        raise StudentNotFound()
+
+    student, user = row
+    sid = str(student.id)
+    await db.delete(student)
+    await db.delete(user)
+    await db.commit()
+    return {"deleted": sid}
+
+
+async def request_delete(
+    db: AsyncSession,
+    student_id: uuid.UUID,
+    requested_by: Optional[uuid.UUID] = None,
+) -> dict:
+    """
+    O'chirish so'rovi: pending_delete=True.
+    Admin keyinchalik tasdiqlaydi.
+    """
+    stmt = select(Student).where(Student.id == student_id)
+    student = (await db.execute(stmt)).scalar_one_or_none()
+    if not student:
+        raise StudentNotFound()
+
+    student.pending_delete = True
     await db.commit()
     return await get_by_id(db, student_id)
 

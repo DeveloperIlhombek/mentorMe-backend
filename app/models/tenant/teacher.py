@@ -24,6 +24,9 @@ class Teacher(Base):
     salary_amount: Mapped[Optional[float]]     = mapped_column(DECIMAL(12, 2), nullable=True)
     hired_at:      Mapped[Optional[date]]      = mapped_column(Date, nullable=True)
     kpi_calc_day:  Mapped[Optional[int]]       = mapped_column(SmallInteger, nullable=True)  # 1-31: KPI oylik hisoblash kuni
-    is_active:     Mapped[bool]                = mapped_column(Boolean, default=True)
-    created_at:    Mapped[datetime]            = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at:    Mapped[datetime]            = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    is_active:        Mapped[bool]                = mapped_column(Boolean, default=True)
+    is_approved:      Mapped[bool]                = mapped_column(Boolean, default=False)
+    created_by:       Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_by_role:  Mapped[Optional[str]]       = mapped_column(String(20), nullable=True)   # admin | instructor | teacher
+    created_at:       Mapped[datetime]            = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at:       Mapped[datetime]            = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

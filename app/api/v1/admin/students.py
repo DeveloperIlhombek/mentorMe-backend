@@ -29,6 +29,7 @@ from app.models.tenant.student import Student
 from app.models.tenant.user import User
 from app.schemas import StudentCreate, StudentUpdate, ok
 from app.services import student as student_svc
+from app.services.student import _get_student_groups
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -59,13 +60,16 @@ async def list_students(
 async def create_student(
     data: StudentCreate,
     db:   AsyncSession = Depends(get_tenant_session),
-    tkn:  dict         = Depends(require_inspector),   # inspektor ham qo'sha oladi
+    tkn:  dict         = Depends(require_teacher),   # teacher ham qo'sha oladi (pending bo'ladi)
 ):
+    caller_role = tkn.get("role", "teacher")
     result = await student_svc.create(
         db, data,
         created_by=uuid.UUID(tkn["sub"]),
+        role=caller_role,
     )
-    return ok(result)
+    pending = not result.get("is_approved", True)
+    return ok(result, {"pending_approval": pending})
 
 
 # ── Admin-only: tasdiq jarayoni ──────────────────────────────────────
@@ -73,13 +77,36 @@ async def create_student(
 @router.get("/pending-approval")
 async def pending_approval(
     db: AsyncSession = Depends(get_tenant_session),
-    _:  dict         = Depends(require_admin),
+    _:  dict         = Depends(require_inspector),  # inspektor ham ko'ra oladi
 ):
-    students, total = await student_svc.get_students(
-        db, page=1, per_page=100, is_active=False
+    """Tasdiqlanmagan o'quvchilar — is_approved=False."""
+    stmt = (
+        select(Student, User)
+        .join(User, Student.user_id == User.id)
+        .where(Student.is_approved == False)
+        .order_by(Student.created_at.desc())
     )
-    pending = [s for s in students if not s.get("is_approved", True)]
-    return ok(pending, {"total": len(pending)})
+    rows = (await db.execute(stmt)).all()
+
+    result = []
+    for student, user in rows:
+        groups = await _get_student_groups(db, student.id)
+        result.append({
+            "id":            str(student.id),
+            "user_id":       str(student.user_id),
+            "first_name":    user.first_name,
+            "last_name":     user.last_name,
+            "phone":         user.phone,
+            "email":         user.email,
+            "is_active":     student.is_active,
+            "is_approved":   student.is_approved,
+            "pending_delete": student.pending_delete,
+            "balance":       float(student.balance),
+            "created_by":    str(student.created_by) if student.created_by else None,
+            "groups":        groups,
+        })
+
+    return ok(result, {"total": len(result)})
 
 
 @router.post("/{student_id}/approve")
