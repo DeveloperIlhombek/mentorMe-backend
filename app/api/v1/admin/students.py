@@ -7,10 +7,12 @@ Ruxsatlar:
   require_admin     → faqat admin
   require_teacher   → admin + inspektor + o'qituvchi
 """
+import random
+import string
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -208,10 +210,51 @@ async def student_payments(
     return ok(payments)
 
 
+@router.post("/{student_id}/generate-parent-link")
+async def generate_parent_link(
+    student_id: uuid.UUID,
+    db:  AsyncSession = Depends(get_tenant_session),
+    tkn: dict         = Depends(require_admin),
+):
+    """
+    Admin uchun: O'quvchi uchun ota-ona invite kodi va deep link generatsiya qilish.
+    Kod 48 soat saqlanadi (Redis mavjud bo'lsa — Redis'da, aks holda — in-memory).
+    """
+    from app.core.config import settings
+    from app.core.invite_store import store_invite
+
+    # O'quvchini tekshirish
+    stmt = select(Student, User).join(User, Student.user_id == User.id).where(Student.id == student_id)
+    row  = (await db.execute(stmt)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+    student, user = row
+
+    tenant_slug = tkn.get("tenant_slug", "default")
+
+    # Invite kodi generatsiya (PRN-XXXXXX)
+    code = "PRN-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+    # Saqlash (Redis yoki in-memory fallback)
+    await store_invite(tenant_slug, code, str(student_id))
+
+    bot_username = getattr(settings, "BOT_USERNAME", "edusaasbot")
+    deep_link    = f"https://t.me/{bot_username}?start=parent_{student_id}_{code}"
+
+    return ok({
+        "invite_code":   code,
+        "deep_link":     deep_link,
+        "student_id":    str(student_id),
+        "student_name":  f"{user.first_name} {user.last_name or ''}".strip(),
+        "expires_hours": 48,
+    })
+
+
 @router.post("/{student_id}/link-parent")
 async def link_parent(
     student_id: uuid.UUID,
     db:  AsyncSession = Depends(get_tenant_session),
-    _:   dict         = Depends(require_admin),        # ota-ona bog'lash — admin
+    _:   dict         = Depends(require_admin),
 ):
-    return ok({"message": "Ota-ona bog'lash"})
+    """Eski endpoint — generate-parent-link ishlatilsin."""
+    return ok({"message": "Eski endpoint. /generate-parent-link ishlatilsin."})

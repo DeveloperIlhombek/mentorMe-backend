@@ -1,81 +1,70 @@
-"""bot/handlers/teacher.py — O'qituvchi buyruqlari"""
+"""
+bot/handlers/teacher.py — O'qituvchi buyruqlari
+  /mygroups — Guruhlarim
+  /today    — Bugungi darslar
+"""
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
-from bot.utils.db import get_tenant_by_telegram_id
+
+from bot.utils.db import get_teacher_by_telegram_id
+from bot.utils.keyboards import back_keyboard
+from datetime import date
 
 router = Router(name="teacher")
 
+DAY_NAMES = ["","Dushanba","Seshanba","Chorshanba","Payshanba","Juma","Shanba","Yakshanba"]
 
-@router.message(Command("mygroups"))
-async def cmd_my_groups(message: Message):
-    tg_id  = message.from_user.id
-    result = await get_tenant_by_telegram_id(tg_id)
-    if not result:
-        await message.answer("❌ Profil topilmadi.")
-        return
-    tenant, user = result
+
+async def _get_groups_text(tg_id: int) -> str:
+    data = await get_teacher_by_telegram_id(tg_id)
+    if not data:
+        return "❌ O'qituvchi profili topilmadi."
+    teacher, user, tenant = data
+    schema = tenant.schema_name
 
     from sqlalchemy import select, text, and_
     from app.core.database import AsyncSessionLocal
-    from app.models.tenant.teacher import Teacher
     from app.models.tenant.group import Group
-    schema = tenant.schema_name
+
     async with AsyncSessionLocal() as session:
         await session.execute(text(f'SET search_path TO "{schema}", public'))
-        teacher = (await session.execute(select(Teacher).where(Teacher.user_id == user.id))).scalar_one_or_none()
-        if not teacher:
-            await message.answer("❌ O'qituvchi profili topilmadi.")
-            return
         groups = (await session.execute(
             select(Group).where(and_(Group.teacher_id == teacher.id, Group.status == "active"))
         )).scalars().all()
 
     if not groups:
-        await message.answer("📚 Aktiv guruhlar yo'q.")
-        return
+        return "📚 Faol guruhlar yo'q."
 
-    from datetime import date
     today_wd = date.today().isoweekday()
-    DAY = ["","Du","Se","Ch","Pa","Ju","Sh","Ya"]
-
-    lines = ["📚 <b>Guruhlaringiz:</b>\n"]
+    lines = [f"📚 <b>Guruhlarim ({len(groups)} ta):</b>\n"]
     for g in groups:
-        schedule_today = ""
+        today_slot = ""
         if g.schedule:
-            for slot in g.schedule:
+            for slot in (g.schedule if isinstance(g.schedule, list) else []):
                 if slot.get("day") == today_wd:
-                    schedule_today = f" — bugun {slot['start']}"
-        lines.append(f"• <b>{g.name}</b>{schedule_today}")
+                    today_slot = f" — bugun {slot.get('start','')}"
+        students_info = f"👥 {g.max_students or '?'} o'rin"
+        lines.append(f"• <b>{g.name}</b>{today_slot}\n  📖 {g.subject}  {students_info}")
 
-    await message.answer("\n".join(lines))
+    return "\n".join(lines)
 
 
-@router.message(Command("today"))
-async def cmd_today(message: Message):
-    """Bugungi jadval."""
-    tg_id  = message.from_user.id
-    result = await get_tenant_by_telegram_id(tg_id)
-    if not result:
-        await message.answer("❌ Profil topilmadi.")
-        return
-    tenant, user = result
+async def _get_today_text(tg_id: int) -> str:
+    data = await get_teacher_by_telegram_id(tg_id)
+    if not data:
+        return "❌ O'qituvchi profili topilmadi."
+    teacher, user, tenant = data
+    schema = tenant.schema_name
 
     from sqlalchemy import select, text, and_
     from app.core.database import AsyncSessionLocal
-    from app.models.tenant.teacher import Teacher
     from app.models.tenant.group import Group
-    from datetime import date
-    today_wd = date.today().isoweekday()
-    DAY_NAMES = ["","Dushanba","Seshanba","Chorshanba","Payshanba","Juma","Shanba","Yakshanba"]
 
-    schema = tenant.schema_name
+    today_wd = date.today().isoweekday()
+
     async with AsyncSessionLocal() as session:
         await session.execute(text(f'SET search_path TO "{schema}", public'))
-        teacher = (await session.execute(select(Teacher).where(Teacher.user_id == user.id))).scalar_one_or_none()
-        if not teacher:
-            await message.answer("❌ O'qituvchi profili topilmadi.")
-            return
         groups = (await session.execute(
             select(Group).where(and_(Group.teacher_id == teacher.id, Group.status == "active"))
         )).scalars().all()
@@ -83,17 +72,37 @@ async def cmd_today(message: Message):
     today_lessons = []
     for g in groups:
         if g.schedule:
-            for slot in g.schedule:
+            for slot in (g.schedule if isinstance(g.schedule, list) else []):
                 if slot.get("day") == today_wd:
-                    today_lessons.append((slot.get("start",""), g.name, slot.get("room","")))
+                    today_lessons.append({
+                        "start": slot.get("start", ""),
+                        "end":   slot.get("end", ""),
+                        "room":  slot.get("room", ""),
+                        "name":  g.name,
+                        "subj":  g.subject,
+                    })
 
-    today_lessons.sort(key=lambda x: x[0])
+    today_lessons.sort(key=lambda x: x["start"])
 
     if not today_lessons:
-        await message.answer(f"📅 Bugun ({DAY_NAMES[today_wd]}) dars yo'q.")
-        return
+        return f"📅 Bugun ({DAY_NAMES[today_wd]}) dars yo'q. Yaxshi dam oling! 😊"
 
-    lines = [f"📅 <b>Bugun ({DAY_NAMES[today_wd]}):</b>\n"]
-    for start, name, room in today_lessons:
-        lines.append(f"🕐 {start} — <b>{name}</b>" + (f" (xona {room})" if room else ""))
-    await message.answer("\n".join(lines))
+    lines = [f"📅 <b>Bugun — {DAY_NAMES[today_wd]}:</b>\n"]
+    for ls in today_lessons:
+        room = f" | 🚪 Xona {ls['room']}" if ls["room"] else ""
+        end  = f"–{ls['end']}" if ls["end"] else ""
+        lines.append(f"🕐 {ls['start']}{end} — <b>{ls['name']}</b>{room}")
+
+    return "\n".join(lines)
+
+
+@router.message(Command("mygroups"))
+async def cmd_my_groups(message: Message):
+    text = await _get_groups_text(message.from_user.id)
+    await message.answer(text, reply_markup=back_keyboard())
+
+
+@router.message(Command("today"))
+async def cmd_today(message: Message):
+    text = await _get_today_text(message.from_user.id)
+    await message.answer(text, reply_markup=back_keyboard())

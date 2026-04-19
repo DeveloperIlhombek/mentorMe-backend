@@ -3,18 +3,20 @@ app/api/v1/parent.py
 
 Ota-ona paneli endpointlari:
   GET  /parent/children                      — farzandlar ro'yxati
-  GET  /parent/children/{student_id}/profile — farzand profili
   GET  /parent/children/{student_id}/attendance
   GET  /parent/children/{student_id}/payments
+  POST /parent/link-invite                   — invite kodi orqali farzandga bog'lanish
 """
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_tenant_session, require_parent
+from app.core.invite_store import get_invite, delete_invite
 from app.models.tenant import Student, User
 from app.schemas import ok
 from app.services import attendance as att_svc
@@ -77,3 +79,57 @@ async def get_child_payments(
     """Farzandning to'lov tarixi."""
     payments, total = await payment_svc.get_payments(db, student_id=student_id)
     return ok(payments, {"total": total})
+
+
+# ── Invite code orqali farzandga bog'lanish ───────────────────────────
+
+class LinkInviteBody(BaseModel):
+    invite_code: str  # "PRN-XXXX" format
+
+
+@router.post("/link-invite")
+async def link_invite(
+    body: LinkInviteBody,
+    db:   AsyncSession = Depends(get_tenant_session),
+    tkn:  dict         = Depends(require_parent),
+):
+    """
+    Ota-ona invite kodi orqali farzandga bog'lanadi.
+    Kod admin tomonidan /students/{id}/generate-parent-link orqali generatsiya qilingan.
+    """
+    parent_user_id = uuid.UUID(tkn["sub"])
+    tenant_slug    = tkn.get("tenant_slug", "default")
+    code           = body.invite_code.strip().upper()
+
+    # Kodni olish (Redis yoki in-memory fallback)
+    student_id_str = await get_invite(tenant_slug, code)
+    if not student_id_str:
+        raise HTTPException(status_code=404, detail="Kod topilmadi yoki muddati o'tgan")
+
+    student_id = uuid.UUID(student_id_str)
+
+    # Studentni topish
+    stmt    = select(Student).where(Student.id == student_id)
+    student = (await db.execute(stmt)).scalar_one_or_none()
+    if not student:
+        raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+
+    # Ota-onani bog'lash
+    student.parent_id = parent_user_id
+    await db.commit()
+    await db.refresh(student)
+
+    # Kodni o'chirish (bir martalik)
+    await delete_invite(tenant_slug, code)
+
+    # Farzand ma'lumotlarini qaytarish
+    user_stmt = select(User).where(User.id == student.user_id)
+    user      = (await db.execute(user_stmt)).scalar_one_or_none()
+
+    return ok({
+        "student_id":   str(student.id),
+        "first_name":   user.first_name if user else "",
+        "last_name":    user.last_name  if user else "",
+        "balance":      float(student.balance),
+        "message":      "Muvaffaqiyatli bog'landi!",
+    })

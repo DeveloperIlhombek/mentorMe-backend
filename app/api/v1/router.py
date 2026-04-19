@@ -14,6 +14,7 @@ from app.api.v1.admin.payments import router as payments_router
 from app.api.v1.admin.reports import router as reports_router
 
 # Admin
+from app.api.v1.admin.invites import router as invites_router
 from app.api.v1.admin.students import router as students_router
 from app.api.v1.admin.teachers import router as teachers_router
 from app.api.v1.admin.trash import router as trash_router
@@ -41,6 +42,7 @@ api_router.include_router(branches_router)
 api_router.include_router(kpi_router)
 api_router.include_router(marketing_router)
 api_router.include_router(trash_router)
+api_router.include_router(invites_router)
 
 # Rollar
 api_router.include_router(superadmin_router)

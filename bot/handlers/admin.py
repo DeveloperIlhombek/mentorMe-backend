@@ -1,43 +1,60 @@
-"""bot/handlers/admin.py — Admin buyruqlari"""
+"""
+bot/handlers/admin.py — Admin va inspektor buyruqlari
+  /stats    — Statistika
+"""
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message
-from bot.utils.db import get_tenant_by_telegram_id
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+
+from bot.utils.db import get_tenant_and_user, get_tenant_stats
+from bot.utils.keyboards import back_keyboard
+from app.core.config import settings
 
 router = Router(name="admin")
+
+
+async def _get_stats_text(tg_id: int) -> str:
+    result = await get_tenant_and_user(tg_id)
+    if not result:
+        return "❌ Profil topilmadi."
+    tenant, user = result
+
+    if user.role not in ("admin", "super_admin", "inspector"):
+        return "❌ Bu buyruq faqat admin/inspektor uchun."
+
+    stats = await get_tenant_stats(tenant.schema_name)
+    debtors_flag = "⚠️" if stats["debtors"] > 0 else "✅"
+    pending_flag = "🟡" if stats["pending"] > 0 else "✅"
+
+    return (
+        f"📊 <b>{tenant.name} — Statistika</b>\n\n"
+        f"👤 O'quvchilar:     <b>{stats['students']}</b>\n"
+        f"👨‍🏫 O'qituvchilar:   <b>{stats['teachers']}</b>\n"
+        f"📚 Faol guruhlar:  <b>{stats['groups']}</b>\n"
+        f"{debtors_flag} Qarzdorlar:    <b>{stats['debtors']}</b>\n"
+        f"{pending_flag} Tasdiqlash kutmoqda: <b>{stats['pending']}</b>"
+    )
 
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
     tg_id  = message.from_user.id
-    result = await get_tenant_by_telegram_id(tg_id)
+    result = await get_tenant_and_user(tg_id)
     if not result:
         await message.answer("❌ Profil topilmadi.")
         return
     tenant, user = result
-
-    if user.role not in ("admin", "super_admin"):
+    if user.role not in ("admin", "super_admin", "inspector"):
         await message.answer("❌ Ruxsat yo'q.")
         return
 
-    from sqlalchemy import select, text, func, and_
-    from app.core.database import AsyncSessionLocal
-    from app.models.tenant.student import Student
-    from app.models.tenant.group import Group
-    from app.models.tenant.teacher import Teacher
-    schema = tenant.schema_name
-
-    async with AsyncSessionLocal() as session:
-        await session.execute(text(f'SET search_path TO "{schema}", public'))
-        students = (await session.execute(select(func.count(Student.id)).where(Student.is_active == True))).scalar_one()
-        groups   = (await session.execute(select(func.count(Group.id)).where(Group.status == "active"))).scalar_one()
-        teachers = (await session.execute(select(func.count(Teacher.id)).where(Teacher.is_active == True))).scalar_one()
-        debtors  = (await session.execute(select(func.count(Student.id)).where(and_(Student.balance < 0, Student.is_active == True)))).scalar_one()
-
+    text = await _get_stats_text(tg_id)
+    locale  = user.language_code or "uz"
+    adm_url = f"{settings.FRONTEND_URL.rstrip('/')}/{locale}/admin/dashboard"
     await message.answer(
-        f"📊 <b>{tenant.name} — Statistika</b>\n\n"
-        f"👤 O'quvchilar: <b>{students}</b>\n"
-        f"👨‍🏫 O'qituvchilar: <b>{teachers}</b>\n"
-        f"📚 Faol guruhlar: <b>{groups}</b>\n"
-        f"⚠️ Qarzdorlar: <b>{debtors}</b>"
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🖥 Admin paneli", web_app=WebAppInfo(url=adm_url))],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_start")],
+        ]),
     )

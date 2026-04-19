@@ -14,8 +14,10 @@ class Settings(BaseSettings):
 
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    BOT_TOKEN:       str = ""
-    BOT_WEBHOOK_URL: str = ""
+    BOT_TOKEN:       str = "8705224036:AAG9DsZOl-EBs9Pt1ZTjmXCle0LpDNMDOj8"
+    BOT_WEBHOOK_URL: str = ""          # Production'da: https://api.edusaas.uz/webhook/bot
+    BOT_USERNAME:    str = "edusaaasbot"
+    FRONTEND_URL:    str = "https://your-frontend.vercel.app"  # TMA URL
 
     JWT_SECRET:                str = "dev-jwt-secret-change-in-production"
     JWT_ACCESS_EXPIRE_MINUTES: int = 15

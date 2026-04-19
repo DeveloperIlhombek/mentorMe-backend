@@ -23,8 +23,14 @@ except Exception:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(f"🚀 EduSaaS v{settings.APP_VERSION} ishga tushdi")
+    if HAS_BOT:
+        from app.webhooks.bot import setup_webhook
+        await setup_webhook()
     yield
     print("👋 EduSaaS to'xtatildi")
+    if HAS_BOT:
+        from app.webhooks.bot import teardown_webhook
+        await teardown_webhook()
 
 
 app = FastAPI(

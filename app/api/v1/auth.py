@@ -32,6 +32,7 @@ from app.core.security import (
 from app.models.public.tenant import Tenant
 from app.models.tenant import User
 from app.schemas import WebLoginRequest, TelegramAuthRequest, RefreshRequest, TokenResponse, ok
+from pydantic import BaseModel
 from sqlalchemy import text
 
 router = APIRouter(tags=["auth"])
@@ -145,22 +146,20 @@ async def telegram_login(
     user = await _get_tenant_user_by_tg(data.tenant_slug, telegram_id)
 
     if not user:
-        # Yangi foydalanuvchi — auto-register (student sifatida)
-        async with AsyncSessionLocal() as session:
-            schema = f"tenant_{data.tenant_slug.replace('-', '_')}"
-            await session.execute(text(f'SET search_path TO "{schema}", public'))
-            user = User(
-                telegram_id=telegram_id,
-                telegram_username=tg_user.get("username"),
-                first_name=tg_user.get("first_name", ""),
-                last_name=tg_user.get("last_name"),
-                language_code=tg_user.get("language_code", "uz"),
-                role="student",
-                is_active=True,
-            )
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
+        # Yangi foydalanuvchi — invite link kerak, auto-register yo'q
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(
+            status_code=403,
+            detail={
+                "code":       "USER_NOT_REGISTERED",
+                "message":    "Siz ro'yxatdan o'tmagansiz. Admin bergan invite link orqali kiring.",
+                "is_new_user": True,
+                "telegram_id": telegram_id,
+                "first_name":  tg_user.get("first_name", ""),
+                "last_name":   tg_user.get("last_name", ""),
+                "username":    tg_user.get("username", ""),
+            }
+        )
 
     return ok(_make_tokens(user, data.tenant_slug))
 
@@ -218,3 +217,125 @@ async def get_me(
         "is_verified":      user.is_verified,
         "created_at":       user.created_at.isoformat() if user.created_at else None,
     })
+
+
+# ── Invite orqali ro'yxatdan o'tish ───────────────────────────────────
+
+class RegisterRequest(BaseModel):
+    tenant_slug:  str
+    invite_code:  str
+    init_data:    str            # Telegram WebApp initData
+    phone:        Optional[str] = None
+    first_name:   Optional[str] = None   # override Telegram data
+    last_name:    Optional[str] = None
+
+
+@router.post("/register")
+async def register_via_invite(
+    data: RegisterRequest,
+    db:   AsyncSession = Depends(get_db_session),
+):
+    """
+    Invite kodi orqali yangi foydalanuvchi ro'yxatdan o'tkazish.
+
+    Qadamlar:
+    1. Tenant topish
+    2. initData tekshirish (Telegram)
+    3. Invite kodi tekshirish → rol + group_id olish
+    4. Foydalanuvchi allaqachon bormi?
+    5. User + rol-specific profil (Teacher/Student/etc.) yaratish
+    6. Invite kodni o'chirish (bir martalik)
+    7. JWT tokens qaytarish
+    """
+    from app.core.invite_store import get_invite, delete_invite
+    from app.models.tenant.student import Student
+    from app.models.tenant.teacher import Teacher
+
+    # 1. Tenant
+    tenant = await _get_tenant(db, data.tenant_slug)
+
+    # 2. Telegram auth
+    bot_token = tenant.bot_token or settings.BOT_TOKEN
+    if not bot_token:
+        raise AuthInvalidInitData()
+
+    tg_data = verify_telegram_init_data(data.init_data, bot_token)
+    if not tg_data:
+        raise AuthInvalidInitData()
+
+    tg_user     = tg_data.get("user", {})
+    telegram_id = tg_user.get("id")
+    if not telegram_id:
+        raise AuthInvalidInitData()
+
+    # 3. Invite kodi
+    code = data.invite_code.strip().upper()
+    raw  = await get_invite(data.tenant_slug, code)
+    if not raw:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Invite kod topilmadi yoki muddati o'tgan")
+
+    # rol va group_id ajratish
+    if ":" in raw:
+        role, group_id_str = raw.split(":", 1)
+        group_id = uuid.UUID(group_id_str)
+    else:
+        role     = raw
+        group_id = None
+
+    schema = f"tenant_{data.tenant_slug.replace('-', '_')}"
+
+    # 4. Mavjud foydalanuvchini tekshirish
+    async with AsyncSessionLocal() as session:
+        await session.execute(text(f'SET search_path TO "{schema}", public'))
+        existing = (await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )).scalar_one_or_none()
+
+        if existing:
+            # Allaqachon ro'yxatdan o'tgan — token qaytaramiz
+            await delete_invite(data.tenant_slug, code)
+            return ok({**(_make_tokens(existing, data.tenant_slug)), "is_new_user": False})
+
+        # 5. Yangi foydalanuvchi yaratish
+        first_name = data.first_name or tg_user.get("first_name", "")
+        last_name  = data.last_name  or tg_user.get("last_name")
+
+        user = User(
+            telegram_id=telegram_id,
+            telegram_username=tg_user.get("username"),
+            first_name=first_name,
+            last_name=last_name,
+            phone=data.phone or None,
+            language_code=tg_user.get("language_code", "uz"),
+            role=role,
+            is_active=True,
+            is_verified=True,
+        )
+        session.add(user)
+        await session.flush()  # user.id olish uchun
+
+        # Rol bo'yicha profil yaratish
+        if role == "student":
+            student = Student(user_id=user.id, is_approved=True, is_active=True)
+            session.add(student)
+            await session.flush()
+            if group_id:
+                from app.models.tenant.student import StudentGroup
+                sg = StudentGroup(student_id=student.id, group_id=group_id)
+                session.add(sg)
+
+        elif role in ("teacher", "inspector"):
+            teacher = Teacher(user_id=user.id, is_active=True)
+            session.add(teacher)
+
+        # parent — foydalanuvchi yaratiladi, farzand keyinchalik bog'lanadi
+
+        await session.commit()
+        await session.refresh(user)
+
+    # 6. Invite o'chirish
+    await delete_invite(data.tenant_slug, code)
+
+    # 7. Tokens
+    return ok({**(_make_tokens(user, data.tenant_slug)), "is_new_user": True, "role": role})
