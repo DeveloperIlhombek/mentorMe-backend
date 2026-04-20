@@ -383,7 +383,8 @@ async def soft_delete(db: AsyncSession, student_id: uuid.UUID) -> None:
     if not student:
         raise StudentNotFound()
 
-    student.is_active = False
+    student.is_active     = False
+    student.pending_delete = False   # ← pending_delete ni tozalaymiz
 
     user_stmt = select(User).where(User.id == student.user_id)
     user = (await db.execute(user_stmt)).scalar_one_or_none()

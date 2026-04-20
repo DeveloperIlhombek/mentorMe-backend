@@ -275,6 +275,139 @@ async def teacher_create_student(
                "message": "O'quvchi yaratildi. Admin tasdiqlashini kuting."})
 
 
+# ─── Teacher: guruhga o'quvchi qo'shish/o'chirish ────────────────────
+
+class _EnrollBody(_BaseModel):
+    student_id: uuid.UUID
+
+@router.post("/groups/{group_id}/enroll", status_code=201)
+async def teacher_enroll_student(
+    group_id: uuid.UUID,
+    body:     _EnrollBody,
+    db:       AsyncSession  = Depends(get_tenant_session),
+    tkn:      dict          = Depends(require_teacher),
+):
+    """
+    Teacher o'z guruhiga o'quvchi qo'shish so'rovi.
+    Admin/inspektor tasdiqlashi kerak (StudentGroup pending = is_approved=False).
+    Bildirishnoma: admin + inspektorlarga yuboriladi.
+    """
+    from sqlalchemy import and_
+    from app.models.tenant.student import Student, StudentGroup
+
+    teacher_user_id = uuid.UUID(tkn["sub"])
+
+    # Teacher o'z guruhiga qo'shishi mumkin (tekshirish)
+    teacher_stmt = select(Teacher).where(Teacher.user_id == teacher_user_id)
+    teacher = (await db.execute(teacher_stmt)).scalar_one_or_none()
+    if not teacher:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Teacher topilmadi")
+
+    group = (await db.execute(select(Group).where(Group.id == group_id))).scalar_one_or_none()
+    if not group:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Guruh topilmadi")
+
+    if group.teacher_id and group.teacher_id != teacher.id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Bu sizning guruhingiz emas")
+
+    # Mavjud enrollment tekshirish
+    existing = (await db.execute(
+        select(StudentGroup).where(
+            and_(StudentGroup.student_id == body.student_id,
+                 StudentGroup.group_id == group_id)
+        )
+    )).scalar_one_or_none()
+
+    if existing and existing.is_active:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="O'quvchi allaqachon guruhda")
+
+    if existing:
+        existing.is_active = True
+        existing.left_at = None
+    else:
+        db.add(StudentGroup(
+            student_id=body.student_id,
+            group_id=group_id,
+        ))
+    await db.commit()
+
+    # Bildirishnoma: admin + inspektorlarga
+    try:
+        from bot.utils.notify import notify_group_enrollment
+        student = (await db.execute(select(Student).where(Student.id == body.student_id))).scalar_one_or_none()
+        caller  = (await db.execute(select(User).where(User.id == teacher_user_id))).scalar_one_or_none()
+        if student:
+            student_user = (await db.execute(select(User).where(User.id == student.user_id))).scalar_one_or_none()
+            s_name = f"{student_user.first_name} {student_user.last_name or ''}".strip() if student_user else "O'quvchi"
+            c_name = f"{caller.first_name} {caller.last_name or ''}".strip() if caller else ""
+            import asyncio
+            asyncio.create_task(notify_group_enrollment(
+                tenant_schema=tkn.get("tenant_slug", "default"),
+                student_name=s_name,
+                group_name=group.name,
+                action="pending",
+                by_name=c_name,
+                by_role="teacher",
+            ))
+    except Exception:
+        pass
+
+    return ok({"message": "So'rov yuborildi. Admin tasdiqlashini kuting."})
+
+
+@router.delete("/groups/{group_id}/students/{student_id}", status_code=204)
+async def teacher_remove_student(
+    group_id:   uuid.UUID,
+    student_id: uuid.UUID,
+    db:         AsyncSession = Depends(get_tenant_session),
+    tkn:        dict         = Depends(require_teacher),
+):
+    """Teacher o'z guruhidan o'quvchini chiqarish."""
+    teacher_user_id = uuid.UUID(tkn["sub"])
+    teacher = (await db.execute(select(Teacher).where(Teacher.user_id == teacher_user_id))).scalar_one_or_none()
+    if not teacher:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Teacher topilmadi")
+
+    group = (await db.execute(select(Group).where(Group.id == group_id))).scalar_one_or_none()
+    if not group:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Guruh topilmadi")
+
+    if group.teacher_id and group.teacher_id != teacher.id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Bu sizning guruhingiz emas")
+
+    from app.services.student import remove_from_group
+    await remove_from_group(db, student_id, group_id)
+
+    # Bildirishnoma
+    try:
+        from bot.utils.notify import notify_group_enrollment
+        from app.models.tenant.student import Student
+        student = (await db.execute(select(Student).where(Student.id == student_id))).scalar_one_or_none()
+        caller  = (await db.execute(select(User).where(User.id == teacher_user_id))).scalar_one_or_none()
+        if student and group:
+            student_user = (await db.execute(select(User).where(User.id == student.user_id))).scalar_one_or_none()
+            s_name = f"{student_user.first_name} {student_user.last_name or ''}".strip() if student_user else "O'quvchi"
+            c_name = f"{caller.first_name} {caller.last_name or ''}".strip() if caller else ""
+            import asyncio
+            asyncio.create_task(notify_group_enrollment(
+                tenant_schema=tkn.get("tenant_slug", "default"),
+                student_name=s_name,
+                group_name=group.name,
+                action="removed",
+                by_name=c_name,
+                by_role="teacher",
+            ))
+    except Exception:
+        pass
+
+
 # ─── Teacher: guruh o'quvchilari ─────────────────────────────────────
 
 @router.get("/groups/{group_id}/students")

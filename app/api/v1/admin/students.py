@@ -185,10 +185,34 @@ async def confirm_delete_student(
 async def add_to_group(
     student_id: uuid.UUID,
     group_id:   uuid.UUID,
-    db: AsyncSession = Depends(get_tenant_session),
-    _:  dict         = Depends(require_inspector),     # inspektor ham qo'shadi
+    db:  AsyncSession = Depends(get_tenant_session),
+    tkn: dict         = Depends(require_inspector),     # inspektor ham qo'shadi
 ):
+    from app.models.tenant.group import Group
     result = await student_svc.add_to_group(db, student_id, group_id)
+
+    # Bildirishnoma: admin + inspektorlarga
+    try:
+        from bot.utils.notify import notify_group_enrollment
+        student = (await db.execute(select(Student).where(Student.id == student_id))).scalar_one_or_none()
+        group   = (await db.execute(select(Group).where(Group.id == group_id))).scalar_one_or_none()
+        caller  = (await db.execute(select(User).where(User.id == uuid.UUID(tkn["sub"])))).scalar_one_or_none()
+        if student and group:
+            student_user = (await db.execute(select(User).where(User.id == student.user_id))).scalar_one_or_none()
+            s_name = f"{student_user.first_name} {student_user.last_name or ''}".strip() if student_user else "O'quvchi"
+            c_name = f"{caller.first_name} {caller.last_name or ''}".strip() if caller else ""
+            import asyncio
+            asyncio.create_task(notify_group_enrollment(
+                tenant_schema=tkn.get("tenant_slug", "default"),
+                student_name=s_name,
+                group_name=group.name,
+                action="added",
+                by_name=c_name,
+                by_role=tkn.get("role", ""),
+            ))
+    except Exception:
+        pass
+
     return ok(result)
 
 
@@ -196,10 +220,33 @@ async def add_to_group(
 async def remove_from_group(
     student_id: uuid.UUID,
     group_id:   uuid.UUID,
-    db: AsyncSession = Depends(get_tenant_session),
-    _:  dict         = Depends(require_inspector),     # inspektor ham chiqaradi
+    db:  AsyncSession = Depends(get_tenant_session),
+    tkn: dict         = Depends(require_inspector),     # inspektor ham chiqaradi
 ):
+    from app.models.tenant.group import Group
     await student_svc.remove_from_group(db, student_id, group_id)
+
+    # Bildirishnoma
+    try:
+        from bot.utils.notify import notify_group_enrollment
+        student = (await db.execute(select(Student).where(Student.id == student_id))).scalar_one_or_none()
+        group   = (await db.execute(select(Group).where(Group.id == group_id))).scalar_one_or_none()
+        caller  = (await db.execute(select(User).where(User.id == uuid.UUID(tkn["sub"])))).scalar_one_or_none()
+        if student and group:
+            student_user = (await db.execute(select(User).where(User.id == student.user_id))).scalar_one_or_none()
+            s_name = f"{student_user.first_name} {student_user.last_name or ''}".strip() if student_user else "O'quvchi"
+            c_name = f"{caller.first_name} {caller.last_name or ''}".strip() if caller else ""
+            import asyncio
+            asyncio.create_task(notify_group_enrollment(
+                tenant_schema=tkn.get("tenant_slug", "default"),
+                student_name=s_name,
+                group_name=group.name,
+                action="removed",
+                by_name=c_name,
+                by_role=tkn.get("role", ""),
+            ))
+    except Exception:
+        pass
 
 
 @router.get("/{student_id}/attendance")

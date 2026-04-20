@@ -196,3 +196,49 @@ async def notify_xp_earned(
     if new_level:
         text = f"🎉 <b>Yangi daraja: {new_level}!</b>\n" + text
     await send_to_user(telegram_id, text)
+
+
+async def notify_group_enrollment(
+    tenant_schema: str,
+    student_name: str,
+    group_name: str,
+    action: str,              # "added" | "removed" | "pending"
+    by_name: str = "",
+    by_role: str = "",
+) -> None:
+    """
+    Admin va inspektorlarga o'quvchi guruhga qo'shilganda/chiqarilganda xabar.
+      action="added"   — qo'shildi
+      action="removed" — chiqarildi
+      action="pending" — teacher so'rovi, tasdiq kerak
+    """
+    from sqlalchemy import select, text
+    from app.core.database import AsyncSessionLocal
+    from app.models.tenant.user import User
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(text(f'SET search_path TO "{tenant_schema}", public'))
+        recipients = (await session.execute(
+            select(User).where(User.role.in_(["admin", "super_admin", "inspector"]))
+        )).scalars().all()
+
+    by_str = f" ({by_name}, {by_role})" if by_name else ""
+
+    if action == "added":
+        emoji, verb = "➕", f"<b>{student_name}</b> guruhga qo'shildi"
+    elif action == "removed":
+        emoji, verb = "➖", f"<b>{student_name}</b> guruhdan chiqarildi"
+    else:
+        emoji, verb = "🔔", f"<b>{student_name}</b> guruhga qo'shish so'rovi"
+
+    msg = (
+        f"{emoji} <b>Guruh o'zgarishi</b>\n\n"
+        f"Guruh: <b>{group_name}</b>\n"
+        f"{verb}{by_str}\n"
+    )
+    if action == "pending":
+        msg += "\nAdmin panelida tasdiqlang."
+
+    for user in recipients:
+        if user.telegram_id:
+            await send_to_user(user.telegram_id, msg)
