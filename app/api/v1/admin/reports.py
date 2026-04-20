@@ -6,6 +6,8 @@ Hisobot endpointlari:
   GET /reports/attendance  — davomat hisoboti (Excel)
   GET /reports/debtors     — qarzdorlar ro'yxati (Excel)
   GET /reports/salary      — o'qituvchi ish haqi (Excel)
+  GET /reports/students    — barcha o'quvchilar ro'yxati (Excel)
+  GET /reports/teachers    — barcha o'qituvchilar ro'yxati (Excel)
 """
 import uuid
 from typing import Optional
@@ -18,6 +20,7 @@ from app.core.dependencies import get_tenant_session, require_admin, require_ins
 from app.services.report import (
     attendance_report, debtors_report,
     financial_report, teacher_salary_report,
+    students_report, teachers_report,
 )
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -89,4 +92,34 @@ async def get_salary_report(
         content=data,
         media_type=EXCEL_MIME,
         headers={"Content-Disposition": f"attachment; filename=salary_{year}_{month:02d}.xlsx"},
+    )
+
+
+@router.get("/students")
+async def get_students_report(
+    branch_id: Optional[uuid.UUID] = Query(None),
+    db: AsyncSession               = Depends(get_tenant_session),
+    _:  dict                       = Depends(require_inspector),
+):
+    """Barcha o'quvchilar ro'yxati — Excel."""
+    data = await students_report(db, branch_id=branch_id)
+    return Response(
+        content=data,
+        media_type=EXCEL_MIME,
+        headers={"Content-Disposition": "attachment; filename=students.xlsx"},
+    )
+
+
+@router.get("/teachers")
+async def get_teachers_report(
+    branch_id: Optional[uuid.UUID] = Query(None),
+    db: AsyncSession               = Depends(get_tenant_session),
+    _:  dict                       = Depends(require_inspector),
+):
+    """Barcha o'qituvchilar ro'yxati — Excel."""
+    data = await teachers_report(db, branch_id=branch_id)
+    return Response(
+        content=data,
+        media_type=EXCEL_MIME,
+        headers={"Content-Disposition": "attachment; filename=teachers.xlsx"},
     )

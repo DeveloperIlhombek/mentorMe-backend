@@ -25,7 +25,7 @@ router = APIRouter(prefix="/groups", tags=["groups"])
 @router.get("")
 async def list_groups(
     page:       int                  = Query(1, ge=1),
-    per_page:   int                  = Query(20, ge=1, le=100),
+    per_page:   int                  = Query(20, ge=1, le=500),
     search:     Optional[str]        = Query(None),
     status:     Optional[str]        = Query(None),
     teacher_id: Optional[uuid.UUID]  = Query(None),

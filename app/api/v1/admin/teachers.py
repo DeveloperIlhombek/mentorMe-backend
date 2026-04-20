@@ -75,7 +75,7 @@ async def _teacher_dict(teacher: Teacher, user: User) -> dict:
 @router.get("")
 async def list_teachers(
     page:        int           = Query(1, ge=1),
-    per_page:    int           = Query(20, ge=1, le=100),
+    per_page:    int           = Query(20, ge=1, le=500),
     search:      Optional[str] = Query(None),
     is_active:   Optional[bool]= Query(None),
     is_approved: Optional[bool]= Query(None),
