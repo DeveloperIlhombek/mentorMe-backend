@@ -150,6 +150,22 @@ async def create_teacher(
     return ok(await _teacher_dict(teacher, user), {"pending_approval": not is_approved})
 
 
+@router.get("/pending")
+async def list_pending_teachers(
+    db: AsyncSession = Depends(get_tenant_session),
+    _:  dict         = Depends(require_admin),
+):
+    """Tasdiqlashni kutayotgan o'qituvchilar ro'yxati (faqat admin ko'radi)."""
+    stmt = (
+        select(Teacher, User)
+        .join(User, Teacher.user_id == User.id)
+        .where(Teacher.is_approved == False)
+        .order_by(Teacher.created_at.desc())
+    )
+    rows = (await db.execute(stmt)).all()
+    return ok([await _teacher_dict(t, u) for t, u in rows])
+
+
 @router.get("/{teacher_id}")
 async def get_teacher(
     teacher_id: uuid.UUID,
@@ -219,22 +235,6 @@ async def delete_teacher(
         if user:
             user.is_active = False
         await db.commit()
-
-
-@router.get("/pending")
-async def list_pending_teachers(
-    db: AsyncSession = Depends(get_tenant_session),
-    _:  dict         = Depends(require_admin),
-):
-    """Tasdiqlashni kutayotgan o'qituvchilar ro'yxati (faqat admin ko'radi)."""
-    stmt = (
-        select(Teacher, User)
-        .join(User, Teacher.user_id == User.id)
-        .where(Teacher.is_approved == False)
-        .order_by(Teacher.created_at.desc())
-    )
-    rows = (await db.execute(stmt)).all()
-    return ok([await _teacher_dict(t, u) for t, u in rows])
 
 
 @router.post("/{teacher_id}/approve")
