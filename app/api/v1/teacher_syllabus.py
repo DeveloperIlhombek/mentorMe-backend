@@ -242,8 +242,10 @@ async def complete_topic(
         from app.core.exceptions import EduSaaSException
         raise EduSaaSException(403, "NOT_TEACHER", "O'qituvchi topilmadi")
 
+    # teacher.id → teachers jadvalining PK-si, lekin SyllabusProgress.completed_by
+    # users.id ga FK. Shuning uchun user_id (users.id) ni o'tkazish kerak.
     results = await syl_svc.bulk_complete_topics(
-        db, teacher_id=teacher.id,
+        db, teacher_id=user_id,
         topic_id=topic_id,
         student_ids=body.student_ids,
     )
@@ -432,6 +434,17 @@ async def request_assign_student(
 
     await db.commit()
     return ok({"request_id": str(req.id), "status": "pending"})
+
+
+@router.get("/teacher/students/{student_id}/progress")
+async def get_student_progress(
+    student_id: uuid.UUID,
+    db:  AsyncSession = Depends(get_tenant_session),
+    _:   dict         = Depends(require_teacher),
+):
+    """O'quvchining barcha biriktirilgan syllabuslar bo'yicha progress."""
+    data = await syl_svc.get_student_syllabuses(db, student_id)
+    return ok(data)
 
 
 @router.get("/teacher/requests")

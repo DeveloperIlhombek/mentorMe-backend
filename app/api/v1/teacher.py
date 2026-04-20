@@ -289,6 +289,22 @@ async def get_group_students(
     return ok(students)
 
 
+@router.get("/students/{student_id}")
+async def get_student_detail(
+    student_id: uuid.UUID,
+    db:  AsyncSession = Depends(get_tenant_session),
+    _:   dict         = Depends(require_teacher),
+):
+    """O'quvchi profili — teacher uchun (progress sahifasida ishlatiladi)."""
+    from app.services.student import get_by_id
+    from app.core.exceptions import StudentNotFound
+    try:
+        data = await get_by_id(db, student_id)
+    except StudentNotFound:
+        raise
+    return ok(data)
+
+
 @router.get("/groups/{group_id}/attendance")
 async def get_group_attendance(
     group_id: uuid.UUID,
