@@ -3,6 +3,8 @@ app/api/v1/admin/teachers.py
 
 O'qituvchilar boshqaruvi.
 """
+import random
+import string
 import uuid
 from typing import Optional
 
@@ -340,4 +342,43 @@ async def salary_report(
         "month":          month,
         "year":           year,
         "calculated_salary": salary if teacher.salary_type == "fixed" else salary * lessons_count,
+    })
+
+
+@router.post("/{teacher_id}/generate-invite")
+async def generate_teacher_invite(
+    teacher_id: uuid.UUID,
+    db:  AsyncSession = Depends(get_tenant_session),
+    tkn: dict         = Depends(require_admin),
+):
+    """
+    O'qituvchi uchun Telegram aktivatsiya havolasi.
+    O'qituvchi bu link orqali Telegram profilini bog'laydi.
+    Payload: user_link:{user_id}
+    """
+    from app.core.config import settings
+    from app.core.invite_store import store_invite
+    from fastapi import HTTPException
+
+    stmt = select(Teacher, User).join(User, Teacher.user_id == User.id).where(Teacher.id == teacher_id)
+    row  = (await db.execute(stmt)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="O'qituvchi topilmadi")
+    teacher, user = row
+
+    tenant_slug = tkn.get("tenant_slug", "default")
+    code = "TCH-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    await store_invite(tenant_slug, code, f"user_link:{str(user.id)}")
+
+    bot_username = getattr(settings, "BOT_USERNAME", "edusaasbot")
+    deep_link    = f"https://t.me/{bot_username}?start=inv_{tenant_slug}_{code}"
+    webapp_link  = f"{settings.FRONTEND_URL.rstrip('/')}/uz/onboarding?code={code}&tenant={tenant_slug}"
+
+    return ok({
+        "invite_code":   code,
+        "deep_link":     deep_link,
+        "webapp_link":   webapp_link,
+        "teacher_id":    str(teacher_id),
+        "teacher_name":  f"{user.first_name} {user.last_name or ''}".strip(),
+        "expires_hours": 48,
     })

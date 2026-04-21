@@ -332,3 +332,41 @@ async def link_parent(
 ):
     """Eski endpoint — generate-parent-link ishlatilsin."""
     return ok({"message": "Eski endpoint. /generate-parent-link ishlatilsin."})
+
+
+@router.post("/{student_id}/generate-invite")
+async def generate_student_invite(
+    student_id: uuid.UUID,
+    db:  AsyncSession = Depends(get_tenant_session),
+    tkn: dict         = Depends(require_inspector),
+):
+    """
+    O'quvchi uchun Telegram aktivatsiya havolasi yaratish.
+    O'quvchi bu link orqali botga kirib Telegram profilini bog'laydi.
+    Payload: user_link:{user_id}
+    """
+    from app.core.config import settings
+    from app.core.invite_store import store_invite
+
+    stmt = select(Student, User).join(User, Student.user_id == User.id).where(Student.id == student_id)
+    row  = (await db.execute(stmt)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+    student, user = row
+
+    tenant_slug = tkn.get("tenant_slug", "default")
+    code = "STU-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    await store_invite(tenant_slug, code, f"user_link:{str(user.id)}")
+
+    bot_username = getattr(settings, "BOT_USERNAME", "edusaasbot")
+    deep_link    = f"https://t.me/{bot_username}?start=inv_{tenant_slug}_{code}"
+    webapp_link  = f"{settings.FRONTEND_URL.rstrip('/')}/uz/onboarding?code={code}&tenant={tenant_slug}"
+
+    return ok({
+        "invite_code":   code,
+        "deep_link":     deep_link,
+        "webapp_link":   webapp_link,
+        "student_id":    str(student_id),
+        "student_name":  f"{user.first_name} {user.last_name or ''}".strip(),
+        "expires_hours": 48,
+    })

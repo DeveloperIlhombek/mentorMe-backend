@@ -14,6 +14,7 @@ from app.api.v1.admin.payments import router as payments_router
 from app.api.v1.admin.reports import router as reports_router
 
 # Admin
+from app.api.v1.admin.inspectors import router as inspectors_router
 from app.api.v1.admin.invites import router as invites_router
 from app.api.v1.admin.students import router as students_router
 from app.api.v1.admin.teachers import router as teachers_router
@@ -36,6 +37,7 @@ api_router.include_router(groups_router)
 api_router.include_router(attendance_router)
 api_router.include_router(payments_router)
 api_router.include_router(teachers_router)
+api_router.include_router(inspectors_router)
 api_router.include_router(reports_router)
 api_router.include_router(finance_router)
 api_router.include_router(branches_router)

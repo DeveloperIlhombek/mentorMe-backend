@@ -275,6 +275,32 @@ async def register_via_invite(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Invite kod topilmadi yoki muddati o'tgan")
 
+    # ── user_link:{user_id} — mavjud foydalanuvchiga Telegram bog'lash ──
+    if raw.startswith("user_link:"):
+        user_id_str = raw[len("user_link:"):]
+        schema = f"tenant_{data.tenant_slug.replace('-', '_')}"
+        async with AsyncSessionLocal() as session:
+            await session.execute(text(f'SET search_path TO "{schema}", public'))
+            target_user = (await session.execute(
+                select(User).where(User.id == uuid.UUID(user_id_str))
+            )).scalar_one_or_none()
+            if not target_user:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi")
+            # Telegram ma'lumotlarini yangilash
+            target_user.telegram_id       = telegram_id
+            target_user.telegram_username = tg_user.get("username")
+            if not target_user.first_name:
+                target_user.first_name = data.first_name or tg_user.get("first_name", "")
+            if not target_user.last_name:
+                target_user.last_name = data.last_name or tg_user.get("last_name")
+            target_user.is_active   = True
+            target_user.is_verified = True
+            await session.commit()
+            await session.refresh(target_user)
+        await delete_invite(data.tenant_slug, code)
+        return ok({**(_make_tokens(target_user, data.tenant_slug)), "is_new_user": False, "role": target_user.role})
+
     # rol va group_id ajratish
     if ":" in raw:
         role, group_id_str = raw.split(":", 1)

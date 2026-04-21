@@ -88,7 +88,10 @@ async def get_my_attendance(
     user_id = uuid.UUID(tkn["sub"])
     student = await _get_student(db, user_id)
     if not student:
-        return ok({"records": [], "summary": {}})
+        return ok({"records": [], "summary": {
+            "total": 0, "present": 0, "absent": 0,
+            "late": 0, "excused": 0, "attendance_percent": 0,
+        }})
 
     result = await att_svc.get_student_history(db, student.id, month, year)
     return ok(result)
