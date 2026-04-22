@@ -270,8 +270,9 @@ async def create_tenant_schema(conn, schema: str):
             password_hash    TEXT,
             first_name       VARCHAR(100) NOT NULL,
             last_name        VARCHAR(100),
-            phone            VARCHAR(20),
+            phone            VARCHAR(20) UNIQUE,
             role             VARCHAR(20) NOT NULL DEFAULT 'student',
+            branch_id        UUID,
             avatar_url       TEXT,
             language_code    VARCHAR(5)  DEFAULT 'uz',
             is_active        BOOLEAN     DEFAULT TRUE,
@@ -298,17 +299,20 @@ async def create_tenant_schema(conn, schema: str):
     # Teachers
     await conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {schema}.teachers (
-            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            user_id       UUID NOT NULL REFERENCES {schema}.users(id) ON DELETE CASCADE,
-            branch_id     UUID REFERENCES {schema}.branches(id),
-            subjects      TEXT[]      DEFAULT '{{}}',
-            bio           TEXT,
-            salary_type   VARCHAR(20) DEFAULT 'fixed',
-            salary_amount DECIMAL(12,2) DEFAULT 0,
-            hired_at      DATE,
-            is_active     BOOLEAN     DEFAULT TRUE,
-            created_at    TIMESTAMPTZ DEFAULT NOW(),
-            updated_at    TIMESTAMPTZ DEFAULT NOW()
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id         UUID NOT NULL REFERENCES {schema}.users(id) ON DELETE CASCADE,
+            branch_id       UUID REFERENCES {schema}.branches(id),
+            subjects        TEXT[]       DEFAULT '{{}}',
+            bio             TEXT,
+            salary_type     VARCHAR(20)  DEFAULT 'fixed',
+            salary_amount   DECIMAL(12,2) DEFAULT 0,
+            hired_at        DATE,
+            is_active       BOOLEAN      DEFAULT TRUE,
+            is_approved     BOOLEAN      DEFAULT TRUE,
+            created_by      UUID,
+            created_by_role VARCHAR(20),
+            created_at      TIMESTAMPTZ  DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ  DEFAULT NOW()
         );
     """)
 
@@ -335,19 +339,24 @@ async def create_tenant_schema(conn, schema: str):
     # Students
     await conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {schema}.students (
-            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            user_id       UUID NOT NULL REFERENCES {schema}.users(id) ON DELETE CASCADE,
-            branch_id     UUID REFERENCES {schema}.branches(id),
-            date_of_birth DATE,
-            gender        VARCHAR(10),
-            parent_id     UUID REFERENCES {schema}.users(id),
-            parent_phone  VARCHAR(20),
-            balance       DECIMAL(12,2) DEFAULT 0,
-            enrolled_at   DATE DEFAULT CURRENT_DATE,
-            is_active     BOOLEAN DEFAULT TRUE,
-            notes         TEXT,
-            created_at    TIMESTAMPTZ DEFAULT NOW(),
-            updated_at    TIMESTAMPTZ DEFAULT NOW()
+            id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id        UUID NOT NULL REFERENCES {schema}.users(id) ON DELETE CASCADE,
+            branch_id      UUID REFERENCES {schema}.branches(id),
+            date_of_birth  DATE,
+            gender         VARCHAR(10),
+            parent_id      UUID REFERENCES {schema}.users(id),
+            parent_phone   VARCHAR(20),
+            balance        DECIMAL(12,2) DEFAULT 0,
+            enrolled_at    DATE DEFAULT CURRENT_DATE,
+            is_active      BOOLEAN DEFAULT TRUE,
+            is_approved    BOOLEAN DEFAULT TRUE,
+            pending_delete BOOLEAN DEFAULT FALSE,
+            payment_day    INTEGER,
+            monthly_fee    DECIMAL(12,2),
+            created_by     UUID,
+            notes          TEXT,
+            created_at     TIMESTAMPTZ DEFAULT NOW(),
+            updated_at     TIMESTAMPTZ DEFAULT NOW()
         );
     """)
 

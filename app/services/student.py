@@ -298,7 +298,13 @@ async def update(
             user.is_active = True
             student.is_active = True
     if getattr(data, 'pending_delete', None)   is not None: student.pending_delete  = data.pending_delete
-    if getattr(data, 'telegram_id', None)      is not None: user.telegram_id        = data.telegram_id
+    if getattr(data, 'telegram_id', None) is not None:
+        # Unique constraint: boshqa usarda bu telegram_id bo'lmasligi kerak
+        existing = (await db.execute(
+            select(User).where(User.telegram_id == data.telegram_id, User.id != student.user_id)
+        )).scalar_one_or_none()
+        if not existing:
+            user.telegram_id = data.telegram_id
     if getattr(data, 'telegram_username', None) is not None: user.telegram_username = data.telegram_username
 
     await db.commit()
