@@ -359,7 +359,7 @@ async def generate_student_invite(
     await store_invite(tenant_slug, code, f"user_link:{str(user.id)}")
 
     bot_username = getattr(settings, "BOT_USERNAME", "edusaasbot")
-    deep_link    = f"https://t.me/{bot_username}?start=inv_{tenant_slug}_{code}"
+    deep_link    = f"https://t.me/{bot_username}?startapp=inv_{tenant_slug}_{code}"
     webapp_link  = f"{settings.FRONTEND_URL.rstrip('/')}/uz/onboarding?code={code}&tenant={tenant_slug}"
 
     return ok({

@@ -109,6 +109,12 @@ async def get_invite_info(
     Invite kod haqida ma'lumot olish.
     ⚠️  PUBLIC endpoint — autentifikatsiya talab qilinmaydi.
     Onboarding sahifasida ro'yxatdan o'tmasdan oldin chaqiriladi.
+
+    Payload turlari:
+      - "student"              → role=student, group_id=None
+      - "student:{group_id}"   → role=student, group_id=...
+      - "teacher"              → role=teacher, group_id=None
+      - "user_link:{user_id}"  → mavjud user, Telegram bog'lash
     """
     from app.core.invite_store import get_invite
 
@@ -116,6 +122,45 @@ async def get_invite_info(
     if not raw:
         raise HTTPException(status_code=404, detail="Kod topilmadi yoki muddati o'tgan")
 
+    # ── user_link turidagi payload ──────────────────────────────────
+    if raw.startswith("user_link:"):
+        user_id_str = raw.split(":", 1)[1]
+        user_first_name = None
+        user_last_name  = None
+        user_phone      = None
+        user_role       = None
+
+        try:
+            schema = f"tenant_{tenant.replace('-', '_')}"
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import text as _text
+                await session.execute(_text(f'SET search_path TO "{schema}", public'))
+                from app.models.tenant.user import User
+                u = (await session.execute(
+                    select(User).where(User.id == uuid.UUID(user_id_str))
+                )).scalar_one_or_none()
+                if u:
+                    user_first_name = u.first_name
+                    user_last_name  = u.last_name
+                    user_phone      = u.phone
+                    user_role       = u.role
+        except Exception:
+            pass  # User topilmasa ham davom et
+
+        return ok({
+            "role":            user_role or "student",
+            "group_id":        None,
+            "group_name":      None,
+            "is_user_link":    True,
+            "user_id":         user_id_str,
+            "user_first_name": user_first_name,
+            "user_last_name":  user_last_name,
+            "user_phone":      user_phone,
+            "valid":           True,
+            "tenant":          tenant,
+        })
+
+    # ── Oddiy role yoki role:group_id payload ───────────────────────
     if ":" in raw:
         role, group_id_str = raw.split(":", 1)
         group_id = group_id_str
@@ -141,9 +186,10 @@ async def get_invite_info(
             pass  # Guruh nomi topilmasa davom et
 
     return ok({
-        "role":       role,
-        "group_id":   group_id,
-        "group_name": group_name,
-        "valid":      True,
-        "tenant":     tenant,
+        "role":         role,
+        "group_id":     group_id,
+        "group_name":   group_name,
+        "is_user_link": False,
+        "valid":        True,
+        "tenant":       tenant,
     })
