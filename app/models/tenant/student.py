@@ -42,13 +42,9 @@ class StudentGroup(Base):
     """Ko'p-ko'p: Student <-> Group orasidagi bog'lanish jadvali."""
     __tablename__ = "student_groups"
 
-    id:         Mapped[uuid.UUID]     = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    student_id: Mapped[uuid.UUID]     = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    group_id:   Mapped[uuid.UUID]     = mapped_column(UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
-    joined_at:  Mapped[date]          = mapped_column(Date, server_default=func.current_date())
-    left_at:    Mapped[Optional[date]]= mapped_column(Date, nullable=True)
-    is_active:  Mapped[bool]          = mapped_column(Boolean, default=True)
-
-    __table_args__ = (
-        UniqueConstraint("student_id", "group_id", name="uq_student_group"),
-    )
+    id:         Mapped[uuid.UUID]          = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    student_id: Mapped[uuid.UUID]          = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
+    group_id:   Mapped[uuid.UUID]          = mapped_column(UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    is_active:  Mapped[bool]               = mapped_column(Boolean, default=True)
+    joined_at:  Mapped[Optional[date]]     = mapped_column(Date, server_default=func.current_date(), nullable=True)
+    left_at:    Mapped[Optional[date]]     = mapped_column(Date, nullable=True)

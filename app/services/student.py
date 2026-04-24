@@ -422,61 +422,14 @@ async def request_delete(
 async def soft_delete(db: AsyncSession, student_id: uuid.UUID) -> None:
     """
     Soft delete: is_active = False.
-    Ma'lumotlar o'chirilmaydi, faqat ko'rsatilmaydi.
+    User.is_active ham False qilinadi.
     """
-    stmt = select(Student).where(Student.id == student_id)
-    student = (await db.execute(stmt)).scalar_one_or_none()
-    if not student:
+    stmt = select(Student, User).join(User, Student.user_id == User.id).where(Student.id == student_id)
+    row  = (await db.execute(stmt)).first()
+    if not row:
         raise StudentNotFound()
+    student, user = row
 
-    student.is_active     = False
-    student.pending_delete = False   # ← pending_delete ni tozalaymiz
-
-    user_stmt = select(User).where(User.id == student.user_id)
-    user = (await db.execute(user_stmt)).scalar_one_or_none()
-    if user:
-        user.is_active = False
-
+    student.is_active = False
+    user.is_active    = False
     await db.commit()
-
-
-async def add_to_group(
-    db: AsyncSession,
-    student_id: uuid.UUID,
-    group_id: uuid.UUID,
-) -> None:
-    """O'quvchini guruhga qo'shish. Agar avval bo'lgan bo'lsa — qayta faollashtirish."""
-    stmt = select(StudentGroup).where(
-        and_(
-            StudentGroup.student_id == student_id,
-            StudentGroup.group_id == group_id,
-        )
-    )
-    existing = (await db.execute(stmt)).scalar_one_or_none()
-
-    if existing:
-        existing.is_active = True
-        existing.left_at = None
-    else:
-        db.add(StudentGroup(student_id=student_id, group_id=group_id))
-
-    await db.commit()
-
-
-async def remove_from_group(
-    db: AsyncSession,
-    student_id: uuid.UUID,
-    group_id: uuid.UUID,
-) -> None:
-    """O'quvchini guruhdan chiqarish (soft: is_active = False)."""
-    stmt = select(StudentGroup).where(
-        and_(
-            StudentGroup.student_id == student_id,
-            StudentGroup.group_id == group_id,
-        )
-    )
-    sg = (await db.execute(stmt)).scalar_one_or_none()
-    if sg:
-        sg.is_active = False
-        sg.left_at = date.today()
-        await db.commit()
