@@ -73,7 +73,9 @@ async def _row_to_dict(db: AsyncSession, student: Student, user: User) -> dict:
         "balance": float(student.balance),
         "is_active": student.is_active,
         "is_approved": student.is_approved,
+        "is_rejected": student.is_rejected,
         "pending_delete": student.pending_delete,
+        "pending_group_ids": student.pending_group_ids or [],
         "created_by": str(student.created_by) if student.created_by else None,
         "is_verified": user.is_verified,
         "enrolled_at": student.enrolled_at.isoformat() if student.enrolled_at else None,
@@ -229,6 +231,12 @@ async def create(
     await db.flush()
 
     # 2. Student
+    # Agar teacher yaratsa va guruh tanlangan bo'lsa:
+    #   → guruhlar pending_group_ids ga saqlanadi (tasdiqlanganida avtomatik qo'shiladi)
+    # Agar admin/inspektor yaratsa:
+    #   → guruhlar darhol StudentGroup ga qo'shiladi
+    group_ids_list = [str(g) for g in (data.group_ids or [])] if not is_approved else []
+
     student = Student(
         user_id=user.id,
         branch_id=data.branch_id,
@@ -239,6 +247,8 @@ async def create(
         payment_day=getattr(data, 'payment_day', 1) or 1,
         monthly_fee=getattr(data, 'monthly_fee', None),
         is_approved=is_approved,
+        is_rejected=False,
+        pending_group_ids=group_ids_list,
         created_by=created_by,
         balance=0,
         enrolled_at=date.today(),
@@ -246,8 +256,8 @@ async def create(
     db.add(student)
     await db.flush()
 
-    # 3. Guruhga biriktirish
-    if data.group_ids:
+    # 3. Guruhga biriktirish — faqat darhol tasdiqlangan o'quvchilar uchun
+    if is_approved and data.group_ids:
         for gid in data.group_ids:
             db.add(StudentGroup(student_id=student.id, group_id=gid))
 
@@ -318,6 +328,7 @@ async def approve(
 ) -> dict:
     """
     O'quvchini tasdiqlash: is_approved=True, is_active=True.
+    pending_group_ids dan StudentGroup yozuvlari yaratiladi.
     """
     stmt = (
         select(Student, User)
@@ -330,8 +341,31 @@ async def approve(
 
     student, user = row
     student.is_approved = True
+    student.is_rejected = False
     student.is_active   = True
     user.is_active      = True
+
+    # pending_group_ids dan guruhga qo'shish
+    pending_ids = student.pending_group_ids or []
+    for gid_str in pending_ids:
+        try:
+            gid = uuid.UUID(str(gid_str))
+        except (ValueError, AttributeError):
+            continue
+        # Agar avval qo'shilgan bo'lsa — qayta faollashtirish
+        existing_stmt = select(StudentGroup).where(
+            and_(StudentGroup.student_id == student_id, StudentGroup.group_id == gid)
+        )
+        existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+        if existing:
+            existing.is_active = True
+            existing.left_at = None
+        else:
+            db.add(StudentGroup(student_id=student_id, group_id=gid))
+
+    # pending_group_ids ni tozalaymiz
+    student.pending_group_ids = []
+
     await db.commit()
     return await get_by_id(db, student_id)
 
@@ -341,7 +375,9 @@ async def reject(
     student_id: uuid.UUID,
 ) -> dict:
     """
-    O'quvchini rad etish — user va student yozuvlarini o'chirish.
+    O'quvchini rad etish (soft reject).
+    is_rejected=True, is_approved=False, is_active=False.
+    Ma'lumotlar o'chirilmaydi — tarix saqlanadi.
     """
     stmt = (
         select(Student, User)
@@ -353,11 +389,15 @@ async def reject(
         raise StudentNotFound()
 
     student, user = row
-    sid = str(student.id)
-    await db.delete(student)
-    await db.delete(user)
+    student.is_rejected = True
+    student.is_approved = False
+    student.is_active   = False
+    user.is_active      = False
+    # pending_group_ids tozalanadi
+    student.pending_group_ids = []
+
     await db.commit()
-    return {"deleted": sid}
+    return await get_by_id(db, student_id)
 
 
 async def request_delete(

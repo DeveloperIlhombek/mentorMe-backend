@@ -79,11 +79,12 @@ async def pending_approval(
     db: AsyncSession = Depends(get_tenant_session),
     _:  dict         = Depends(require_inspector),  # inspektor ham ko'ra oladi
 ):
-    """Tasdiqlanmagan o'quvchilar — is_approved=False."""
+    """Tasdiqlanmagan o'quvchilar — is_approved=False va is_rejected=False."""
     stmt = (
         select(Student, User)
         .join(User, Student.user_id == User.id)
         .where(Student.is_approved == False)
+        .where(Student.is_rejected == False)
         .order_by(Student.created_at.desc())
     )
     rows = (await db.execute(stmt)).all()
@@ -92,18 +93,20 @@ async def pending_approval(
     for student, user in rows:
         groups = await _get_student_groups(db, student.id)
         result.append({
-            "id":            str(student.id),
-            "user_id":       str(student.user_id),
-            "first_name":    user.first_name,
-            "last_name":     user.last_name,
-            "phone":         user.phone,
-            "email":         user.email,
-            "is_active":     student.is_active,
-            "is_approved":   student.is_approved,
-            "pending_delete": student.pending_delete,
-            "balance":       float(student.balance),
-            "created_by":    str(student.created_by) if student.created_by else None,
-            "groups":        groups,
+            "id":                str(student.id),
+            "user_id":           str(student.user_id),
+            "first_name":        user.first_name,
+            "last_name":         user.last_name,
+            "phone":             user.phone,
+            "email":             user.email,
+            "is_active":         student.is_active,
+            "is_approved":       student.is_approved,
+            "is_rejected":       student.is_rejected,
+            "pending_delete":    student.pending_delete,
+            "pending_group_ids": student.pending_group_ids or [],
+            "balance":           float(student.balance),
+            "created_by":        str(student.created_by) if student.created_by else None,
+            "groups":            groups,
         })
 
     return ok(result, {"total": len(result)})
