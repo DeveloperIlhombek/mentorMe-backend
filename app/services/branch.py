@@ -44,18 +44,16 @@ async def get_branch(db: AsyncSession, branch_id: uuid.UUID) -> Optional[dict]:
 
 
 async def create_branch(
-    db:         AsyncSession,
-    name:       str,
-    address:    Optional[str] = None,
-    phone:      Optional[str] = None,
-    manager_id: Optional[uuid.UUID] = None,
-    is_main:    bool = False,
+    db:                         AsyncSession,
+    name:                       str,
+    address:                    Optional[str]       = None,
+    phone:                      Optional[str]       = None,
+    manager_id:                 Optional[uuid.UUID] = None,
+    is_main:                    bool                = False,
+    attendance_deadline_hours:  int                 = 2,
 ) -> dict:
     # Faqat bitta asosiy filial bo'lishi mumkin
     if is_main:
-        await db.execute(
-            select(Branch)  # update all is_main to False
-        )
         existing_main = (await db.execute(
             select(Branch).where(Branch.is_main == True)
         )).scalars().all()
@@ -65,6 +63,7 @@ async def create_branch(
     b = Branch(
         name=name, address=address, phone=phone,
         manager_id=manager_id, is_main=is_main,
+        attendance_deadline_hours=attendance_deadline_hours,
     )
     db.add(b)
     await db.commit()
@@ -655,14 +654,15 @@ async def _branch_dict(
             manager_name = f"{mgr.first_name} {mgr.last_name or ''}".strip()
 
     result = {
-        "id":           str(b.id),
-        "name":         b.name,
-        "address":      b.address,
-        "phone":        b.phone,
-        "is_main":      b.is_main,
-        "is_active":    b.is_active,
-        "manager_id":   str(b.manager_id) if b.manager_id else None,
-        "manager_name": manager_name,
+        "id":                         str(b.id),
+        "name":                       b.name,
+        "address":                    b.address,
+        "phone":                      b.phone,
+        "is_main":                    b.is_main,
+        "is_active":                  b.is_active,
+        "manager_id":                 str(b.manager_id) if b.manager_id else None,
+        "manager_name":               manager_name,
+        "attendance_deadline_hours":  getattr(b, "attendance_deadline_hours", 2),
     }
 
     if detailed:

@@ -19,10 +19,13 @@ from app.api.v1.admin.invites import router as invites_router
 from app.api.v1.admin.students import router as students_router
 from app.api.v1.admin.teachers import router as teachers_router
 from app.api.v1.admin.trash import router as trash_router
+from app.api.v1.admin.progress import router as progress_router
+from app.api.v1.admin.lesson_cancellations import router as lesson_cancellations_router
 from app.api.v1.gamification import router as gamification_router
 from app.api.v1.notifications import router as notifications_router
 from app.api.v1.parent import router as parent_router
 from app.api.v1.student_routes import router as student_router
+from app.api.v1.teacher_progress import router as teacher_progress_router
 
 # Boshqa rollar
 from app.api.v1.superadmin import router as superadmin_router
@@ -45,11 +48,14 @@ api_router.include_router(kpi_router)
 api_router.include_router(marketing_router)
 api_router.include_router(trash_router)
 api_router.include_router(invites_router)
+api_router.include_router(progress_router)
+api_router.include_router(lesson_cancellations_router)
 
 # Rollar
 api_router.include_router(superadmin_router)
 api_router.include_router(teacher_router)
 api_router.include_router(teacher_syllabus_router)
+api_router.include_router(teacher_progress_router)
 api_router.include_router(student_router)
 api_router.include_router(parent_router)
 api_router.include_router(gamification_router)

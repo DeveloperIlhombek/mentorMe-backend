@@ -252,6 +252,11 @@ async def create(
         created_by=created_by,
         balance=0,
         enrolled_at=date.today(),
+        # Sarafan ma'lumotlari
+        referral_source=getattr(data, 'referral_source', None),
+        referred_by_teacher_id=getattr(data, 'referred_by_teacher_id', None),
+        # O'zlashtirish belgilash kunlari
+        progress_dates=getattr(data, 'progress_dates', None) or [],
     )
     db.add(student)
     await db.flush()
@@ -419,10 +424,17 @@ async def request_delete(
     return await get_by_id(db, student_id)
 
 
-async def soft_delete(db: AsyncSession, student_id: uuid.UUID) -> None:
+async def soft_delete(
+    db: AsyncSession,
+    student_id: uuid.UUID,
+    leave_reason: Optional[str] = None,
+    churn_teacher_id: Optional[uuid.UUID] = None,
+    notes: Optional[str] = None,
+) -> None:
     """
     Soft delete: is_active = False.
     User.is_active ham False qilinadi.
+    Ketish sababi va churn_teacher_id saqlanadi.
     """
     stmt = select(Student, User).join(User, Student.user_id == User.id).where(Student.id == student_id)
     row  = (await db.execute(stmt)).first()
@@ -432,4 +444,25 @@ async def soft_delete(db: AsyncSession, student_id: uuid.UUID) -> None:
 
     student.is_active = False
     user.is_active    = False
+    if leave_reason:
+        student.leave_reason = leave_reason
+    if churn_teacher_id:
+        student.churn_teacher_id = churn_teacher_id
+    if notes and not student.notes:
+        student.notes = notes
+
+    # Barcha StudentGroup larni deactivate qilish
+    from app.models.tenant.student import StudentGroup
+    from datetime import date as _date
+    sgs = (await db.execute(
+        select(StudentGroup).where(
+            StudentGroup.student_id == student_id,
+            StudentGroup.is_active  == True,
+        )
+    )).scalars().all()
+    today = _date.today()
+    for sg in sgs:
+        sg.is_active = False
+        sg.left_at   = today
+
     await db.commit()

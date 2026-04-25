@@ -28,6 +28,7 @@ from app.models.tenant import Notification
 from app.models.tenant.student import Student
 from app.models.tenant.user import User
 from app.schemas import StudentCreate, StudentUpdate, ok
+from app.schemas.student import StudentDeactivate
 from app.services import student as student_svc
 from app.services.student import _get_student_groups
 
@@ -155,13 +156,21 @@ async def update_student(
     return ok(result)
 
 
-@router.delete("/{student_id}", status_code=204)
+@router.delete("/{student_id}", status_code=200)
 async def delete_student(
-    student_id: uuid.UUID,
+    student_id:   uuid.UUID,
+    leave_reason: Optional[str]       = Query(None),
+    churn_teacher_id: Optional[uuid.UUID] = Query(None),
     db: AsyncSession = Depends(get_tenant_session),
-    _:  dict         = Depends(require_admin),         # o'chirish faqat admin
+    _:  dict         = Depends(require_admin),
 ):
-    await student_svc.soft_delete(db, student_id)
+    """O'quvchini o'chirish — sabab va churn_teacher_id bilan."""
+    await student_svc.soft_delete(
+        db, student_id,
+        leave_reason=leave_reason,
+        churn_teacher_id=churn_teacher_id,
+    )
+    return ok({"message": "O'quvchi arxivlandi"})
 
 
 @router.post("/{student_id}/request-delete")
@@ -177,10 +186,17 @@ async def request_delete_student(
 @router.post("/{student_id}/confirm-delete")
 async def confirm_delete_student(
     student_id: uuid.UUID,
+    data: StudentDeactivate,
     db:  AsyncSession = Depends(get_tenant_session),
-    _:   dict         = Depends(require_admin),        # admin tasdiqlaydi
+    _:   dict         = Depends(require_admin),
 ):
-    await student_svc.soft_delete(db, student_id)
+    """Admin tasdiqlaydi — sabab va churn_teacher_id bilan."""
+    await student_svc.soft_delete(
+        db, student_id,
+        leave_reason=data.leave_reason,
+        churn_teacher_id=data.churn_teacher_id,
+        notes=data.notes,
+    )
     return ok({"message": "O'quvchi o'chirildi"})
 
 

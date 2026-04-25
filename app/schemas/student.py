@@ -19,11 +19,18 @@ class StudentCreate(BaseModel):
     branch_id:        Optional[uuid.UUID] = None
     notes:            Optional[str]  = None
     group_ids:        Optional[List[uuid.UUID]] = None
-    # Yangi maydonlar
+    # To'lov
     payment_day:      Optional[int]   = Field(None, ge=1, le=31)
     monthly_fee:      Optional[float] = Field(None, gt=0)
+    # Telegram
     telegram_id:      Optional[int]   = None
     telegram_username:Optional[str]   = None
+    # Sarafan: o'quvchi qanday qilib kelgani
+    # Qiymatlar: teacher | social | friend | ad | other
+    referral_source:         Optional[str]       = None
+    referred_by_teacher_id:  Optional[uuid.UUID] = None
+    # O'zlashtirish belgilash kunlari [X, Y] — oyning kunlari
+    progress_dates:          Optional[List[int]]  = None
 
 
 class StudentUpdate(BaseModel):
@@ -45,6 +52,16 @@ class StudentUpdate(BaseModel):
     # Telegram
     telegram_id:      Optional[int]   = None
     telegram_username:Optional[str]   = None
+    # O'zlashtirish belgilash kunlari
+    progress_dates:   Optional[List[int]] = None
+
+
+class StudentDeactivate(BaseModel):
+    """O'quvchini o'chirish/arxivlash — sabab bilan."""
+    # Qiymatlar: teacher | price | schedule | location | moved | graduated | other
+    leave_reason:     Optional[str]       = None
+    churn_teacher_id: Optional[uuid.UUID] = None
+    notes:            Optional[str]       = None
 
 
 class StudentOut(BaseModel):

@@ -11,6 +11,9 @@ from app.models.tenant.kpi import KpiMetric, KpiPayslip, KpiResult, KpiRule
 from app.models.tenant.teacher import Teacher
 from app.models.tenant.attendance import Attendance
 from app.models.tenant.group import Group
+from app.models.tenant.student import Student, StudentGroup
+from app.models.tenant.branch import Branch
+from app.models.tenant.marketing import ReferralCode, ReferralUse
 
 
 # ─── Metrikalar CRUD ─────────────────────────────────────────────────
@@ -237,12 +240,24 @@ async def _compute_metric(
     """Metrika turiga qarab actual_value hisoblash."""
 
     if metric.slug == "attendance_punctuality":
-        # Davomat o'z vaqtidaligi: teacher_id va oy bo'yicha attendance yozuvlari
-        # "O'z vaqtida" = created_at - date farkı <= 24 soat (oddiy yondashuv)
+        # Davomat o'z vaqtidaligi: branch deadline soatiga qarab
+        # Agar submitted_at <= dars_tugash_vaqti + deadline_hours → o'z vaqtida
+        teacher_row = (await db.execute(
+            select(Teacher).where(Teacher.id == teacher_id)
+        )).scalar_one_or_none()
+        deadline_hours = 2  # default
+        if teacher_row and teacher_row.branch_id:
+            branch = (await db.execute(
+                select(Branch).where(Branch.id == teacher_row.branch_id)
+            )).scalar_one_or_none()
+            if branch and hasattr(branch, "attendance_deadline_hours"):
+                deadline_hours = branch.attendance_deadline_hours or 2
+
+        # Umumiy davomat yozuvlari (shu oy)
         total = (await db.execute(
             select(func.count(Attendance.id)).where(
                 and_(
-                    Attendance.teacher_id   == teacher_id,
+                    Attendance.teacher_id        == teacher_id,
                     extract("month", Attendance.date) == month,
                     extract("year",  Attendance.date) == year,
                 )
@@ -250,14 +265,15 @@ async def _compute_metric(
         )).scalar_one()
         if total == 0:
             return Decimal("0")
-        # O'z vaqtida kiritilgan = created_at - date <= 1 kun
+
+        # O'z vaqtida kiritilganlari: is_late_entry = False
         on_time = (await db.execute(
             select(func.count(Attendance.id)).where(
                 and_(
-                    Attendance.teacher_id   == teacher_id,
+                    Attendance.teacher_id        == teacher_id,
                     extract("month", Attendance.date) == month,
                     extract("year",  Attendance.date) == year,
-                    func.date(Attendance.created_at) <= Attendance.date + timedelta(days=1),
+                    Attendance.is_late_entry     == False,
                 )
             )
         )).scalar_one()
@@ -294,6 +310,71 @@ async def _compute_metric(
             )
         )).scalar_one()
         return Decimal(str(round(present / total * 100, 2)))
+
+    if metric.slug == "student_churn_rate":
+        # O'quvchi ketish darajasi: shu oy teacher guruhidan ketgan / boshidagi jami
+        from datetime import date as date_type
+        period_start = date_type(year, month, 1)
+        # Keyingi oy 1-si
+        if month == 12:
+            period_end = date_type(year + 1, 1, 1)
+        else:
+            period_end = date_type(year, month + 1, 1)
+
+        group_ids = (await db.execute(
+            select(Group.id).where(
+                and_(Group.teacher_id == teacher_id, Group.status == "active")
+            )
+        )).scalars().all()
+        if not group_ids:
+            return Decimal("0")
+
+        # Period ichida aktiv bo'lgan (oy boshida qo'shilgan yoki oldin)
+        start_count = (await db.execute(
+            select(func.count(StudentGroup.id)).where(
+                and_(
+                    StudentGroup.group_id.in_(group_ids),
+                    StudentGroup.joined_at < period_end,
+                    (StudentGroup.left_at == None) | (StudentGroup.left_at >= period_start),
+                )
+            )
+        )).scalar_one() or 0
+        if start_count == 0:
+            return Decimal("0")
+
+        # Shu oy ichida ketganlar
+        left_count = (await db.execute(
+            select(func.count(StudentGroup.id)).where(
+                and_(
+                    StudentGroup.group_id.in_(group_ids),
+                    StudentGroup.is_active == False,
+                    StudentGroup.left_at   >= period_start,
+                    StudentGroup.left_at   <  period_end,
+                )
+            )
+        )).scalar_one() or 0
+        return Decimal(str(round(left_count / start_count * 100, 2)))
+
+    if metric.slug == "sarafan_referrals":
+        # O'qituvchi tavsiyasi bilan kelgan yangi o'quvchilar soni
+        # referred_by_teacher_id == teacher_id AND shu oy created
+        from datetime import date as date_type
+        period_start = date_type(year, month, 1)
+        if month == 12:
+            period_end = date_type(year + 1, 1, 1)
+        else:
+            period_end = date_type(year, month + 1, 1)
+
+        count = (await db.execute(
+            select(func.count(Student.id)).where(
+                and_(
+                    Student.referred_by_teacher_id == teacher_id,
+                    func.date(Student.created_at)  >= period_start,
+                    func.date(Student.created_at)  <  period_end,
+                )
+            )
+        )).scalar_one() or 0
+        return Decimal(str(count))
 
     # Boshqa metrikalar uchun null (qo'lda kiritiladi)
     return None

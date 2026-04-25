@@ -19,18 +19,20 @@ router = APIRouter(prefix="/branches", tags=["branches"])
 # ─── Schemas ─────────────────────────────────────────────────────────
 
 class BranchCreate(BaseModel):
-    name:       str
-    address:    Optional[str]  = None
-    phone:      Optional[str]  = None
-    manager_id: Optional[uuid.UUID] = None
-    is_main:    bool = False
+    name:                      str
+    address:                   Optional[str]       = None
+    phone:                     Optional[str]       = None
+    manager_id:                Optional[uuid.UUID] = None
+    is_main:                   bool = False
+    attendance_deadline_hours: int  = 2  # Davomat kiritish chegarasi (soat)
 
 
 class BranchUpdate(BaseModel):
-    name:       Optional[str]  = None
-    address:    Optional[str]  = None
-    phone:      Optional[str]  = None
-    is_main:    Optional[bool] = None
+    name:                      Optional[str]  = None
+    address:                   Optional[str]  = None
+    phone:                     Optional[str]  = None
+    is_main:                   Optional[bool] = None
+    attendance_deadline_hours: Optional[int]  = None
 
 
 class AssignInspector(BaseModel):
@@ -83,11 +85,12 @@ async def create_branch(
 ):
     result = await branch_svc.create_branch(
         db,
-        name       = data.name,
-        address    = data.address,
-        phone      = data.phone,
-        manager_id = data.manager_id,
-        is_main    = data.is_main,
+        name                      = data.name,
+        address                   = data.address,
+        phone                     = data.phone,
+        manager_id                = data.manager_id,
+        is_main                   = data.is_main,
+        attendance_deadline_hours = data.attendance_deadline_hours,
     )
     return ok(result)
 

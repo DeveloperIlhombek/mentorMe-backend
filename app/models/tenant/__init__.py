@@ -33,3 +33,7 @@ from app.models.tenant.marketing import (
 )
 
 from app.models.tenant.branch_ops import BranchExpense, InspectorRequest
+
+from app.models.tenant.progress import StudentProgress
+
+from app.models.tenant.lesson_cancellation import LessonCancellation, PaymentAdjustment

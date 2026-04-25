@@ -25,6 +25,9 @@ class Attendance(Base):
     note:            Mapped[Optional[str]]       = mapped_column(Text, nullable=True)
     parent_notified: Mapped[bool]                = mapped_column(Boolean, default=False)
     notified_at:     Mapped[Optional[datetime]]  = mapped_column(DateTime(timezone=True), nullable=True)
+    # O'qituvchi davomatni qachon kiritgani (kechikishni hisoblash uchun)
+    submitted_at:    Mapped[Optional[datetime]]  = mapped_column(DateTime(timezone=True), nullable=True)
+    is_late_entry:   Mapped[bool]                = mapped_column(Boolean, default=False, nullable=False)
     created_at:      Mapped[datetime]            = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

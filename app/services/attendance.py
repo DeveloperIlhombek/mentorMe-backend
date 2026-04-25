@@ -8,7 +8,7 @@ Davomat biznes logika:
   - Streak hisoblash
 """
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from sqlalchemy import and_, extract, func, select
@@ -23,6 +23,7 @@ from app.models.tenant import (
     User,
     XpTransaction,
 )
+from app.models.tenant.branch import Branch
 from app.schemas.attendance import AttendanceBulkCreate
 
 # XP miqdorlari (TZ dan)
@@ -42,6 +43,55 @@ def _calc_level(total_xp: int) -> int:
 
 # ─── asosiy funksiyalar ───────────────────────────────────────────────
 
+async def _is_late_submission(
+    db: AsyncSession,
+    group: Group,
+    lesson_date: date,
+    submitted_at: datetime,
+) -> bool:
+    """
+    Davomat kech kiritilganligini tekshiradi.
+    Guruh jadvalidagi o'sha kunga mos dars tugash vaqti + branch deadline_hours ni oladi.
+    Agar submitted_at > deadline → True (kech).
+    """
+    # Branch deadline soatini olish
+    deadline_hours = 2  # default
+    if group.branch_id:
+        branch = (await db.execute(
+            select(Branch).where(Branch.id == group.branch_id)
+        )).scalar_one_or_none()
+        if branch and hasattr(branch, "attendance_deadline_hours"):
+            deadline_hours = branch.attendance_deadline_hours or 2
+
+    # O'sha kunning hafta nomini topish
+    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    weekday_name = day_names[lesson_date.weekday()]
+
+    # Guruh jadvalidan o'sha kuni uchun dars tugash vaqtini topish
+    schedule = group.schedule or []
+    end_time_str = None
+    for slot in schedule:
+        if isinstance(slot, dict) and slot.get("day", "").lower() == weekday_name:
+            end_time_str = slot.get("end")
+            break
+
+    if not end_time_str:
+        # Jadvalda topilmadi → faqat 23:59 gacha bo'lsa o'z vaqtida
+        lesson_end_dt = datetime.combine(lesson_date, datetime.strptime("23:59", "%H:%M").time())
+        lesson_end_dt = lesson_end_dt.replace(tzinfo=submitted_at.tzinfo)
+    else:
+        try:
+            end_time = datetime.strptime(end_time_str, "%H:%M").time()
+            lesson_end_dt = datetime.combine(lesson_date, end_time)
+            lesson_end_dt = lesson_end_dt.replace(tzinfo=submitted_at.tzinfo)
+        except ValueError:
+            lesson_end_dt = datetime.combine(lesson_date, datetime.strptime("23:59", "%H:%M").time())
+            lesson_end_dt = lesson_end_dt.replace(tzinfo=submitted_at.tzinfo)
+
+    deadline_dt = lesson_end_dt + timedelta(hours=deadline_hours)
+    return submitted_at > deadline_dt
+
+
 async def bulk_create(
     db: AsyncSession,
     data: AttendanceBulkCreate,
@@ -53,9 +103,20 @@ async def bulk_create(
     - Mavjud bo'lsa yangilaydi (upsert)
     - present/late → XP beradi
     - absent → ota-onaga bildirishnoma
+    - submitted_at va is_late_entry belgilanadi
     """
     created = 0
     xp_count = 0
+    submitted_at = datetime.utcnow()
+
+    # Guruhni olish (kechikish tekshiruvi uchun)
+    group = (await db.execute(
+        select(Group).where(Group.id == data.group_id)
+    )).scalar_one_or_none()
+
+    is_late = False
+    if group:
+        is_late = await _is_late_submission(db, group, data.date, submitted_at)
 
     for item in data.records:
         # Upsert: mavjud yozuvni yangilash yoki yangi yaratish
@@ -69,16 +130,20 @@ async def bulk_create(
         att = (await db.execute(stmt)).scalar_one_or_none()
 
         if att:
-            att.status = item.status
-            att.note   = item.note
+            att.status       = item.status
+            att.note         = item.note
+            att.submitted_at = submitted_at
+            att.is_late_entry = is_late
         else:
             att = Attendance(
-                student_id=item.student_id,
-                group_id=data.group_id,
-                teacher_id=teacher_id,
-                date=data.date,
-                status=item.status,
-                note=item.note,
+                student_id    = item.student_id,
+                group_id      = data.group_id,
+                teacher_id    = teacher_id,
+                date          = data.date,
+                status        = item.status,
+                note          = item.note,
+                submitted_at  = submitted_at,
+                is_late_entry = is_late,
             )
             db.add(att)
             await db.flush()
@@ -103,10 +168,12 @@ async def bulk_create(
     await db.commit()
 
     return {
-        "created": created,
-        "xp_awarded": xp_count,
-        "date": data.date.isoformat(),
-        "group_id": str(data.group_id),
+        "created":       created,
+        "xp_awarded":    xp_count,
+        "date":          data.date.isoformat(),
+        "group_id":      str(data.group_id),
+        "is_late_entry": is_late,
+        "submitted_at":  submitted_at.isoformat(),
     }
 
 
