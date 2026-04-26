@@ -158,6 +158,23 @@ async def get_my_syllabus(
     return ok(data)
 
 
+@router.get("/assessment")
+async def get_my_assessment(
+    month: Optional[int] = Query(None, ge=1, le=12),
+    year:  Optional[int] = Query(None),
+    db:    AsyncSession  = Depends(get_tenant_session),
+    tkn:   dict          = Depends(require_student),
+):
+    """O'quvchining o'z baholash natijalari (o'qituvchi kiritgan scores)."""
+    user_id = uuid.UUID(tkn["sub"])
+    student = await _get_student(db, user_id)
+    if not student:
+        return ok([])
+    from app.services import student_progress as sp_svc
+    scores = await sp_svc.get_student_scores(db, student.id, month, year)
+    return ok(scores)
+
+
 @router.get("/parent")
 async def get_my_parent(
     db:  AsyncSession = Depends(get_tenant_session),

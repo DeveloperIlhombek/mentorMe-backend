@@ -200,11 +200,20 @@ async def get_cancellations(
     group_id: Optional[uuid.UUID]   = None,
     student_id: Optional[uuid.UUID] = None,
 ) -> List[dict]:
-    stmt = select(LessonCancellation).order_by(LessonCancellation.lesson_date.desc())
+    stmt = (
+        select(LessonCancellation, Group)
+        .outerjoin(Group, LessonCancellation.group_id == Group.id)
+        .order_by(LessonCancellation.lesson_date.desc())
+    )
     if group_id:   stmt = stmt.where(LessonCancellation.group_id   == group_id)
     if student_id: stmt = stmt.where(LessonCancellation.student_id == student_id)
-    rows = (await db.execute(stmt)).scalars().all()
-    return [_cancel_dict(r) for r in rows]
+    rows = (await db.execute(stmt)).all()
+    result = []
+    for lc, g in rows:
+        d = _cancel_dict(lc)
+        d["group_name"] = g.name if g else None
+        result.append(d)
+    return result
 
 
 async def get_adjustments(
