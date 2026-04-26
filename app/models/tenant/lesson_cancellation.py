@@ -36,10 +36,16 @@ class LessonCancellation(Base):
     # Sabab
     reason:         Mapped[Optional[str]]       = mapped_column(Text, nullable=True)
 
+    # So'rov holati: 'pending' | 'approved' | 'rejected'
+    # Teacher yuborsa → 'pending'; Admin/Inspektor bevosita qo'shsa → 'approved'
+    status:           Mapped[str]                = mapped_column(String(20), nullable=False, default="pending")
+
     # To'lov korreksiyasi amalga oshirilganmi
     payment_adjusted: Mapped[bool]              = mapped_column(Boolean, default=False)
 
     created_by:     Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_by:    Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at:    Mapped[Optional[datetime]]  = mapped_column(DateTime(timezone=True), nullable=True)
     created_at:     Mapped[datetime]            = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

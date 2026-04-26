@@ -21,6 +21,7 @@ from app.api.v1.admin.teachers import router as teachers_router
 from app.api.v1.admin.trash import router as trash_router
 from app.api.v1.admin.progress import router as progress_router
 from app.api.v1.admin.lesson_cancellations import router as lesson_cancellations_router
+from app.api.v1.admin.assessment import router as admin_assessment_router
 from app.api.v1.gamification import router as gamification_router
 from app.api.v1.notifications import router as notifications_router
 from app.api.v1.parent import router as parent_router
@@ -50,6 +51,7 @@ api_router.include_router(trash_router)
 api_router.include_router(invites_router)
 api_router.include_router(progress_router)
 api_router.include_router(lesson_cancellations_router)
+api_router.include_router(admin_assessment_router)
 
 # Rollar
 api_router.include_router(superadmin_router)

@@ -116,7 +116,10 @@ async def bulk_create(
 
     is_late = False
     if group:
-        is_late = await _is_late_submission(db, group, data.date, submitted_at)
+        try:
+            is_late = await _is_late_submission(db, group, data.date, submitted_at)
+        except Exception:
+            is_late = False  # migration hali bajarilmagan bo'lsa xavfsiz fallback
 
     for item in data.records:
         # Upsert: mavjud yozuvni yangilash yoki yangi yaratish
@@ -392,10 +395,11 @@ async def _notify_parent_absent(
             f"({att_date.strftime('%d.%m.%Y')}) "
             f"{group_name} darsiga kelmadi."
         ),
-        data={
+                data={
             "student_id": str(student_id),
             "group_id":   str(group_id),
             "date":       att_date.isoformat(),
         },
-        channel="telegram",
     ))
+    student.parent_notified = True
+

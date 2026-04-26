@@ -16,7 +16,7 @@ from typing import Optional as _Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel as _BaseModel
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_tenant_session, require_teacher
@@ -177,15 +177,19 @@ async def get_today_schedule(
     db:  AsyncSession = Depends(get_tenant_session),
     tkn: dict         = Depends(require_teacher),
 ):
-    """Bugungi darslar jadvali."""
+    """Bugungi darslar jadvali (attendance_done + students_count + extra darslar)."""
+    from app.models.tenant.attendance import Attendance
+    from app.models.tenant.student import StudentGroup
+
     user_id = uuid.UUID(tkn["sub"])
     teacher = await _get_teacher(db, user_id)
     if not teacher:
         return ok([])
 
-    today_weekday = date.today().isoweekday()  # 1=Du ... 7=Ya
+    today       = date.today()
+    today_wd    = today.isoweekday()   # 1=Du … 7=Ya
 
-    # O'qituvchining faol guruhlarini olish
+    # Faol guruhlar
     stmt = select(Group).where(
         and_(Group.teacher_id == teacher.id, Group.status == "active")
     )
@@ -193,20 +197,70 @@ async def get_today_schedule(
 
     today_lessons = []
     for g in groups:
-        if not g.schedule:
-            continue
-        for slot in g.schedule:
-            if slot.get("day") == today_weekday:
-                today_lessons.append({
-                    "group_id":   str(g.id),
-                    "group_name": g.name,
-                    "subject":    g.subject,
-                    "start":      slot.get("start"),
-                    "end":        slot.get("end"),
-                    "room":       slot.get("room"),
-                })
+        # O'quvchilar soni
+        sc_stmt = select(func.count()).select_from(
+            select(StudentGroup).where(
+                and_(StudentGroup.group_id == g.id, StudentGroup.is_active == True)
+            ).subquery()
+        )
+        students_count = (await db.execute(sc_stmt)).scalar_one() or 0
 
-    today_lessons.sort(key=lambda x: x["start"] or "")
+        # Davomat kiritilganmi?
+        att_stmt = select(Attendance).where(
+            and_(Attendance.group_id == g.id, Attendance.date == today)
+        ).limit(1)
+        attendance_done = bool((await db.execute(att_stmt)).first())
+
+        if g.schedule:
+            for slot in g.schedule:
+                if slot.get("day") == today_wd:
+                    today_lessons.append({
+                        "group_id":       str(g.id),
+                        "group_name":     g.name,
+                        "subject":        g.subject,
+                        "start":          slot.get("start"),
+                        "end":            slot.get("end"),
+                        "room":           slot.get("room"),
+                        "students_count": students_count,
+                        "attendance_done":attendance_done,
+                        "is_extra":       False,
+                    })
+
+    # Extra darslar — lesson_cancellations.adj_type='extra' va lesson_date=today
+    try:
+        from app.models.tenant.lesson_cancellation import LessonCancellation
+        extra_stmt = (
+            select(LessonCancellation, Group)
+            .join(Group, LessonCancellation.group_id == Group.id)
+            .where(
+                and_(
+                    LessonCancellation.lesson_date == today,
+                    Group.teacher_id == teacher.id,
+                )
+            )
+        )
+        extra_rows = (await db.execute(extra_stmt)).all()
+        seen_extra = {(str(lc.group_id), lc.lesson_date) for lc, _ in extra_rows}
+        for lc, g in extra_rows:
+            # Jadvalda allaqachon ko'rsatilmagan bo'lsa
+            key = (str(g.id), today)
+            slot = (g.schedule or [{}])[0]
+            today_lessons.append({
+                "group_id":       str(g.id),
+                "group_name":     g.name,
+                "subject":        g.subject,
+                "start":          slot.get("start", ""),
+                "end":            slot.get("end", ""),
+                "room":           slot.get("room"),
+                "students_count": 0,
+                "attendance_done":False,
+                "is_extra":       True,
+                "reason":         lc.reason,
+            })
+    except Exception:
+        pass   # jadval yo'q bo'lsa e'tiborsiz
+
+    today_lessons.sort(key=lambda x: x.get("start") or "")
     return ok(today_lessons)
 
 

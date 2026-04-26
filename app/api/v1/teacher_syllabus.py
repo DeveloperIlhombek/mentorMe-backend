@@ -473,3 +473,66 @@ async def my_requests(
         "reject_reason":r.reject_reason,
     } for r in rows]
     return ok(data)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# GURUH O'QUVCHILARI — UMUMIY PROGRESS
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/teacher/groups/{group_id}/students/progress")
+async def get_group_progress(
+    group_id: uuid.UUID,
+    db:  AsyncSession = Depends(get_tenant_session),
+    _:   dict         = Depends(require_teacher),
+):
+    """
+    Guruhning barcha o'quvchilari bo'yicha umumiy progress foizi.
+    Har bir o'quvchi uchun: completed_topics, total_topics, progress_pct.
+    """
+    from app.models.tenant.student import Student, StudentGroup
+    from app.models.tenant.user import User as TUser
+
+    # Guruh o'quvchilari
+    rows = (await db.execute(
+        select(Student, TUser)
+        .join(TUser, Student.user_id == TUser.id)
+        .join(StudentGroup, StudentGroup.student_id == Student.id)
+        .where(
+            StudentGroup.group_id  == group_id,
+            StudentGroup.is_active == True,
+            Student.is_active      == True,
+        )
+        .order_by(TUser.first_name)
+    )).all()
+
+    result = []
+    for student, user in rows:
+        syllabuses = await syl_svc.get_student_syllabuses(db, student.id)
+        total     = sum(s["total_topics"]     for s in syllabuses)
+        completed = sum(s["completed_topics"] for s in syllabuses)
+        pct       = round(completed / total * 100, 1) if total else 0.0
+
+        result.append({
+            "student_id":       str(student.id),
+            "first_name":       user.first_name,
+            "last_name":        user.last_name or "",
+            "phone":            user.phone,
+            "progress_pct":     pct,
+            "completed_topics": completed,
+            "total_topics":     total,
+            "syllabuses_count": len(syllabuses),
+            "syllabuses":       [
+                {
+                    "id":               s["id"],
+                    "title":            s["title"],
+                    "color":            s["color"],
+                    "icon":             s["icon"],
+                    "progress_pct":     s["progress_pct"],
+                    "completed_topics": s["completed_topics"],
+                    "total_topics":     s["total_topics"],
+                }
+                for s in syllabuses
+            ],
+        })
+
+    return ok(result)

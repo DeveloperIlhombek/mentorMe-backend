@@ -370,6 +370,19 @@ async def approve(
 
     # pending_group_ids ni tozalaymiz
     student.pending_group_ids = []
+    await db.flush()
+
+    # Teacher ga bildirishnoma — o'quvchi tasdiqlandi
+    if student.created_by:
+        from app.models.tenant import Notification
+        student_name = f"{user.first_name} {user.last_name or ''}".strip()
+        db.add(Notification(
+            user_id = student.created_by,
+            type    = "request_approved",
+            title   = "O'quvchi tasdiqlandi ✅",
+            body    = f"{student_name} muvaffaqiyatli faollashtirildi va guruhga qo'shildi.",
+            data    = {"student_id": str(student_id)},
+        ))
 
     await db.commit()
     return await get_by_id(db, student_id)
@@ -400,9 +413,42 @@ async def reject(
     user.is_active      = False
     # pending_group_ids tozalanadi
     student.pending_group_ids = []
+    await db.flush()
+
+    # Teacher ga bildirishnoma — o'quvchi rad etildi
+    if student.created_by:
+        from app.models.tenant import Notification
+        student_name = f"{user.first_name} {user.last_name or ''}".strip()
+        db.add(Notification(
+            user_id = student.created_by,
+            type    = "request_rejected",
+            title   = "O'quvchi rad etildi ❌",
+            body    = f"{student_name} so'rovi admin tomonidan rad etildi.",
+            data    = {"student_id": str(student_id)},
+        ))
 
     await db.commit()
     return await get_by_id(db, student_id)
+
+
+async def remove_from_group(
+    db: AsyncSession,
+    student_id: uuid.UUID,
+    group_id: uuid.UUID,
+) -> None:
+    """O'quvchini guruhdan chiqarish (StudentGroup deactivate)."""
+    stmt = select(StudentGroup).where(
+        and_(
+            StudentGroup.student_id == student_id,
+            StudentGroup.group_id   == group_id,
+            StudentGroup.is_active  == True,
+        )
+    )
+    sg = (await db.execute(stmt)).scalar_one_or_none()
+    if sg:
+        sg.is_active = False
+        sg.left_at   = date.today()
+        await db.commit()
 
 
 async def request_delete(
@@ -411,58 +457,6 @@ async def request_delete(
     requested_by: Optional[uuid.UUID] = None,
 ) -> dict:
     """
-    O'chirish so'rovi: pending_delete=True.
+    Ochirish sorovi: pending_delete=True.
     Admin keyinchalik tasdiqlaydi.
     """
-    stmt = select(Student).where(Student.id == student_id)
-    student = (await db.execute(stmt)).scalar_one_or_none()
-    if not student:
-        raise StudentNotFound()
-
-    student.pending_delete = True
-    await db.commit()
-    return await get_by_id(db, student_id)
-
-
-async def soft_delete(
-    db: AsyncSession,
-    student_id: uuid.UUID,
-    leave_reason: Optional[str] = None,
-    churn_teacher_id: Optional[uuid.UUID] = None,
-    notes: Optional[str] = None,
-) -> None:
-    """
-    Soft delete: is_active = False.
-    User.is_active ham False qilinadi.
-    Ketish sababi va churn_teacher_id saqlanadi.
-    """
-    stmt = select(Student, User).join(User, Student.user_id == User.id).where(Student.id == student_id)
-    row  = (await db.execute(stmt)).first()
-    if not row:
-        raise StudentNotFound()
-    student, user = row
-
-    student.is_active = False
-    user.is_active    = False
-    if leave_reason:
-        student.leave_reason = leave_reason
-    if churn_teacher_id:
-        student.churn_teacher_id = churn_teacher_id
-    if notes and not student.notes:
-        student.notes = notes
-
-    # Barcha StudentGroup larni deactivate qilish
-    from app.models.tenant.student import StudentGroup
-    from datetime import date as _date
-    sgs = (await db.execute(
-        select(StudentGroup).where(
-            StudentGroup.student_id == student_id,
-            StudentGroup.is_active  == True,
-        )
-    )).scalars().all()
-    today = _date.today()
-    for sg in sgs:
-        sg.is_active = False
-        sg.left_at   = today
-
-    await db.commit()

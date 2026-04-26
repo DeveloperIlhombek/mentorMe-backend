@@ -1,85 +1,107 @@
 """
 app/api/v1/teacher_progress.py
-O'qituvchi tomonidan o'zlashtirish darajasini kiritish.
+O'qituvchi oylik baholash endpointlari.
 
-Endpointlar:
-  GET  /teacher/progress          — o'qituvchining pending yozuvlari
-  POST /teacher/progress/{id}     — score kiritish
-  GET  /teacher/progress/summary  — o'quvchi xulosasi
+  GET  /teacher/assessment/groups/{group_id}?month=&year=  — guruh baholash holati
+  POST /teacher/assessment/groups/{group_id}/submit         — bulk score kiritish
+  GET  /teacher/assessment/my?month=&year=                  — o'qituvchi KPI uchun holat
 """
 import uuid
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.dependencies import get_tenant_session, require_teacher
 from app.models.tenant.teacher import Teacher
-from app.models.tenant.user import User
 from app.schemas import ok
 from app.services import student_progress as svc
-from sqlalchemy import select
 
-router = APIRouter(prefix="/teacher/progress", tags=["teacher-progress"])
-
-
-class ProgressSubmit(BaseModel):
-    score: float = Field(..., ge=0, le=100, description="O'zlashtirish darajasi (0-100%)")
-    notes: Optional[str] = None
+router = APIRouter(prefix="/teacher/assessment", tags=["teacher-assessment"])
 
 
-@router.get("")
-async def my_pending_progress(
-    month:  Optional[int] = Query(None),
-    year:   Optional[int] = Query(None),
-    status: str           = Query("pending"),
-    db: AsyncSession      = Depends(get_tenant_session),
-    tkn: dict             = Depends(require_teacher),
+async def _get_teacher(db: AsyncSession, user_id: uuid.UUID) -> Optional[Teacher]:
+    return (await db.execute(
+        select(Teacher).where(Teacher.user_id == user_id)
+    )).scalar_one_or_none()
+
+
+class ScoreEntry(BaseModel):
+    student_id: uuid.UUID
+    score:      float = Field(..., ge=0, le=100)
+    notes:      Optional[str] = None
+
+
+class BulkSubmitBody(BaseModel):
+    month:  int
+    year:   int
+    scores: List[ScoreEntry]
+
+
+# ── Guruh baholash holati ─────────────────────────────────────────────
+
+@router.get("/groups/{group_id}")
+async def get_group_assessment(
+    group_id: uuid.UUID,
+    month: int = Query(default=None),
+    year:  int = Query(default=None),
+    db:  AsyncSession = Depends(get_tenant_session),
+    _:   dict         = Depends(require_teacher),
 ):
-    """O'qituvchining kiritishi kerak bo'lgan (yoki kiritilgan) progress yozuvlari."""
+    """Guruhning joriy oy baholash holati + barcha o'quvchilar."""
+    today = date.today()
+    m = month or today.month
+    y = year  or today.year
+    data = await svc.get_group_assessment(db, group_id, m, y)
+    return ok(data)
+
+
+# ── Bulk score kiritish ───────────────────────────────────────────────
+
+@router.post("/groups/{group_id}/submit")
+async def bulk_submit(
+    group_id: uuid.UUID,
+    body: BulkSubmitBody,
+    db:  AsyncSession = Depends(get_tenant_session),
+    tkn: dict         = Depends(require_teacher),
+):
+    """Guruh o'quvchilari uchun baholashni bir vaqtda saqlash."""
     teacher = await _get_teacher(db, uuid.UUID(tkn["sub"]))
     if not teacher:
-        return ok([])
-    return ok(await svc.get_progress(
-        db, teacher_id=teacher.id, month=month, year=year, status=status
-    ))
+        from fastapi import HTTPException
+        raise HTTPException(403, "Teacher topilmadi")
 
-
-@router.post("/{progress_id}")
-async def submit_score(
-    progress_id: uuid.UUID,
-    data: ProgressSubmit,
-    db: AsyncSession = Depends(get_tenant_session),
-    tkn: dict        = Depends(require_teacher),
-):
-    """O'qituvchi o'quvchining o'zlashtirish darajasini kiritadi."""
-    submitted_by = uuid.UUID(tkn["sub"])
-    result = await svc.submit_progress(
+    scores = [{"student_id": str(e.student_id), "score": e.score, "notes": e.notes}
+              for e in body.scores]
+    result = await svc.bulk_submit_assessment(
         db,
-        progress_id  = progress_id,
-        score        = data.score,
-        notes        = data.notes,
-        submitted_by = submitted_by,
+        group_id   = group_id,
+        month      = body.month,
+        year       = body.year,
+        teacher_id = teacher.id,
+        scores     = scores,
     )
     return ok(result)
 
 
-@router.get("/student/{student_id}/summary")
-async def student_summary(
-    student_id: uuid.UUID,
-    month: int  = Query(...),
-    year:  int  = Query(...),
-    db: AsyncSession = Depends(get_tenant_session),
-    _:  dict         = Depends(require_teacher),
+# ── O'qituvchi o'z baholash holati (KPI uchun) ────────────────────────
+
+@router.get("/my")
+async def my_assessment_status(
+    month: Optional[int] = Query(None),
+    year:  Optional[int] = Query(None),
+    db:  AsyncSession    = Depends(get_tenant_session),
+    tkn: dict            = Depends(require_teacher),
 ):
-    """O'quvchining bitta oy bo'yicha o'zlashtirish xulosasi."""
-    return ok(await svc.get_student_progress_summary(db, student_id, month, year))
-
-
-async def _get_teacher(db: AsyncSession, user_id: uuid.UUID):
-    t = (await db.execute(
-        select(Teacher).where(Teacher.user_id == user_id)
-    )).scalar_one_or_none()
-    return t
+    """O'qituvchining barcha guruhlari bo'yicha baholash holati."""
+    teacher = await _get_teacher(db, uuid.UUID(tkn["sub"]))
+    if not teacher:
+        return ok({"groups": [], "total_submitted": 0, "total_students": 0})
+    today = date.today()
+    m = month or today.month
+    y = year  or today.year
+    data = await svc.get_teacher_assessments(db, teacher.id, m, y)
+    return ok(data)

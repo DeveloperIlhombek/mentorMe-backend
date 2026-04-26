@@ -46,6 +46,9 @@ class StudentProgress(Base):
     notified:       Mapped[bool]                = mapped_column(Boolean, default=False)
     notified_at:    Mapped[Optional[datetime]]  = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Vaqtida kiritilganmi
+    is_late:        Mapped[bool]                = mapped_column(Boolean, default=False)
+
     # Qachon kiritilgan
     submitted_at:   Mapped[Optional[datetime]]  = mapped_column(DateTime(timezone=True), nullable=True)
     created_at:     Mapped[datetime]            = mapped_column(DateTime(timezone=True), server_default=func.now())

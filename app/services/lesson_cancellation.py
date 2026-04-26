@@ -15,7 +15,6 @@ Logika:
 import uuid
 import calendar
 from datetime import date, datetime
-from decimal import Decimal
 from typing import List, Optional
 
 from sqlalchemy import and_, select
@@ -36,9 +35,12 @@ async def cancel_lesson(
     student_id: Optional[uuid.UUID] = None,
     reason: Optional[str] = None,
     created_by: Optional[uuid.UUID] = None,
+    created_by_role: str = "teacher",  # 'teacher' | 'admin' | 'inspector'
 ) -> dict:
     """
-    Darsni bekor qiladi va tegishli o'quvchilar uchun to'lov korreksiyasini yaratadi.
+    Darsni bekor qiladi.
+    - Teacher → status='pending', to'lov o'zgartirilmaydi (admin tasdiqlashi kerak)
+    - Admin/Inspector → status='approved', to'lov darhol o'zgartiriladi
     """
     if scope == "student" and not student_id:
         raise ValueError("scope='student' uchun student_id kerak")
@@ -49,6 +51,9 @@ async def cancel_lesson(
     if not group:
         raise ValueError("Guruh topilmadi")
 
+    is_admin = created_by_role in ("admin", "super_admin", "inspector")
+    status = "approved" if is_admin else "pending"
+
     # LessonCancellation yozuvi
     cancel = LessonCancellation(
         group_id         = group_id,
@@ -56,39 +61,42 @@ async def cancel_lesson(
         student_id       = student_id if scope == "student" else None,
         lesson_date      = lesson_date,
         reason           = reason,
+        status           = status,
         payment_adjusted = False,
         created_by       = created_by,
+        reviewed_by      = created_by if is_admin else None,
+        reviewed_at      = datetime.utcnow() if is_admin else None,
     )
     db.add(cancel)
     await db.flush()  # id olish uchun
 
-    # Ta'sir ko'rsatiladigan o'quvchilar
-    if scope == "student":
-        target_students = await _get_students([student_id], db)
-    else:
-        # Guruhning barcha aktiv o'quvchilari
-        sg_rows = (await db.execute(
-            select(StudentGroup.student_id).where(
-                StudentGroup.group_id  == group_id,
-                StudentGroup.is_active == True,
-            )
-        )).scalars().all()
-        target_students = await _get_students(list(sg_rows), db)
-
     adjustments = []
-    for student in target_students:
-        adj = await _create_adjustment(
-            db          = db,
-            student     = student,
-            group       = group,
-            cancel_id   = cancel.id,
-            adj_type    = "credit",
-            lesson_date = lesson_date,
-            created_by  = created_by,
-        )
-        adjustments.append(adj)
+    if is_admin:
+        # Admin/Inspektor — darhol to'lovni o'zgartirish
+        if scope == "student":
+            target_students = await _get_students([student_id], db)
+        else:
+            sg_rows = (await db.execute(
+                select(StudentGroup.student_id).where(
+                    StudentGroup.group_id  == group_id,
+                    StudentGroup.is_active == True,
+                )
+            )).scalars().all()
+            target_students = await _get_students(list(sg_rows), db)
 
-    cancel.payment_adjusted = True
+        for student in target_students:
+            adj = await _create_adjustment(
+                db          = db,
+                student     = student,
+                group       = group,
+                cancel_id   = cancel.id,
+                adj_type    = "credit",
+                lesson_date = lesson_date,
+                created_by  = created_by,
+            )
+            adjustments.append(adj)
+        cancel.payment_adjusted = True
+
     await db.commit()
 
     return {
@@ -96,6 +104,7 @@ async def cancel_lesson(
         "group_id":        str(group_id),
         "lesson_date":     str(lesson_date),
         "scope":           scope,
+        "status":          status,
         "affected_count":  len(adjustments),
         "adjustments":     adjustments,
     }
@@ -111,10 +120,12 @@ async def add_extra_lesson(
     student_id: Optional[uuid.UUID] = None,
     reason: Optional[str] = None,
     created_by: Optional[uuid.UUID] = None,
+    created_by_role: str = "teacher",
 ) -> dict:
     """
     Qo'shimcha (rejalashtirilmagan) dars qo'shadi.
-    O'quvchining keyingi to'lov sanasi qisqaradi (debit).
+    - Teacher → status='pending', to'lov o'zgartirilmaydi (admin tasdiqlashi kerak)
+    - Admin/Inspector → status='approved', to'lov darhol o'zgartiriladi
     """
     if scope == "student" and not student_id:
         raise ValueError("scope='student' uchun student_id kerak")
@@ -125,45 +136,50 @@ async def add_extra_lesson(
     if not group:
         raise ValueError("Guruh topilmadi")
 
-    # LessonCancellation jadvalini "qo'shimcha dars" uchun ham ishlatamiz
-    # reason ichida "extra_lesson" belgisi bo'ladi
+    is_admin = created_by_role in ("admin", "super_admin", "inspector")
+    status = "approved" if is_admin else "pending"
+
     cancel = LessonCancellation(
         group_id         = group_id,
         scope            = scope,
         student_id       = student_id if scope == "student" else None,
         lesson_date      = lesson_date,
         reason           = f"[extra_lesson] {reason or ''}".strip(),
+        status           = status,
         payment_adjusted = False,
         created_by       = created_by,
+        reviewed_by      = created_by if is_admin else None,
+        reviewed_at      = datetime.utcnow() if is_admin else None,
     )
     db.add(cancel)
     await db.flush()
 
-    if scope == "student":
-        target_students = await _get_students([student_id], db)
-    else:
-        sg_rows = (await db.execute(
-            select(StudentGroup.student_id).where(
-                StudentGroup.group_id  == group_id,
-                StudentGroup.is_active == True,
-            )
-        )).scalars().all()
-        target_students = await _get_students(list(sg_rows), db)
-
     adjustments = []
-    for student in target_students:
-        adj = await _create_adjustment(
-            db          = db,
-            student     = student,
-            group       = group,
-            cancel_id   = cancel.id,
-            adj_type    = "debit",
-            lesson_date = lesson_date,
-            created_by  = created_by,
-        )
-        adjustments.append(adj)
+    if is_admin:
+        if scope == "student":
+            target_students = await _get_students([student_id], db)
+        else:
+            sg_rows = (await db.execute(
+                select(StudentGroup.student_id).where(
+                    StudentGroup.group_id  == group_id,
+                    StudentGroup.is_active == True,
+                )
+            )).scalars().all()
+            target_students = await _get_students(list(sg_rows), db)
 
-    cancel.payment_adjusted = True
+        for student in target_students:
+            adj = await _create_adjustment(
+                db          = db,
+                student     = student,
+                group       = group,
+                cancel_id   = cancel.id,
+                adj_type    = "debit",
+                lesson_date = lesson_date,
+                created_by  = created_by,
+            )
+            adjustments.append(adj)
+        cancel.payment_adjusted = True
+
     await db.commit()
 
     return {
@@ -171,6 +187,7 @@ async def add_extra_lesson(
         "group_id":        str(group_id),
         "lesson_date":     str(lesson_date),
         "scope":           scope,
+        "status":          status,
         "affected_count":  len(adjustments),
         "adjustments":     adjustments,
     }
@@ -202,7 +219,130 @@ async def get_adjustments(
     return [_adj_dict(r) for r in rows]
 
 
-# ─── To'lov korreksiyasi hisoblash ────────────────────────────────────
+# ─── Admin: So'rovni tasdiqlash / rad etish ───────────────────────────
+
+async def approve_cancellation(
+    db: AsyncSession,
+    cancellation_id: uuid.UUID,
+    reviewed_by: Optional[uuid.UUID] = None,
+) -> dict:
+    """
+    Admin/Inspektor dars so'rovini tasdiqlaydi.
+    status='approved', payment_day o'zgartiriladi.
+    """
+    lc = (await db.execute(
+        select(LessonCancellation).where(LessonCancellation.id == cancellation_id)
+    )).scalar_one_or_none()
+    if not lc:
+        raise ValueError("So'rov topilmadi")
+    if lc.status != "pending":
+        raise ValueError(f"So'rov allaqachon '{lc.status}' holatida")
+
+    group = (await db.execute(
+        select(Group).where(Group.id == lc.group_id)
+    )).scalar_one_or_none()
+    if not group:
+        raise ValueError("Guruh topilmadi")
+
+    is_extra = lc.reason and lc.reason.startswith("[extra_lesson]")
+    adj_type = "debit" if is_extra else "credit"
+
+    # O'quvchilarni aniqlash
+    if lc.scope == "student" and lc.student_id:
+        target_students = await _get_students([lc.student_id], db)
+    else:
+        sg_rows = (await db.execute(
+            select(StudentGroup.student_id).where(
+                StudentGroup.group_id  == lc.group_id,
+                StudentGroup.is_active == True,
+            )
+        )).scalars().all()
+        target_students = await _get_students(list(sg_rows), db)
+
+    adjustments = []
+    for student in target_students:
+        adj = await _create_adjustment(
+            db          = db,
+            student     = student,
+            group       = group,
+            cancel_id   = lc.id,
+            adj_type    = adj_type,
+            lesson_date = lc.lesson_date,
+            created_by  = reviewed_by,
+        )
+        adjustments.append(adj)
+
+    lc.status           = "approved"
+    lc.payment_adjusted = True
+    lc.reviewed_by      = reviewed_by
+    lc.reviewed_at      = datetime.utcnow()
+    await db.commit()
+
+    return {
+        "cancellation_id": str(lc.id),
+        "status":          "approved",
+        "affected_count":  len(adjustments),
+        "adjustments":     adjustments,
+    }
+
+
+async def reject_cancellation(
+    db: AsyncSession,
+    cancellation_id: uuid.UUID,
+    reviewed_by: Optional[uuid.UUID] = None,
+) -> dict:
+    """
+    Admin/Inspektor dars so'rovini rad etadi.
+    status='rejected', payment_day o'zgartirilmaydi.
+    """
+    lc = (await db.execute(
+        select(LessonCancellation).where(LessonCancellation.id == cancellation_id)
+    )).scalar_one_or_none()
+    if not lc:
+        raise ValueError("So'rov topilmadi")
+    if lc.status != "pending":
+        raise ValueError(f"So'rov allaqachon '{lc.status}' holatida")
+
+    lc.status      = "rejected"
+    lc.reviewed_by = reviewed_by
+    lc.reviewed_at = datetime.utcnow()
+    await db.commit()
+
+    return {"cancellation_id": str(lc.id), "status": "rejected"}
+
+
+async def list_pending(
+    db: AsyncSession,
+    group_id: Optional[uuid.UUID] = None,
+) -> List[dict]:
+    """
+    Admin/Inspektor uchun: barcha 'pending' so'rovlar (o'qituvchi + guruh nomi bilan).
+    """
+    from app.models.tenant import User
+    from app.models.tenant.teacher import Teacher
+
+    stmt = (
+        select(LessonCancellation, Group, User)
+        .outerjoin(Group, LessonCancellation.group_id == Group.id)
+        .outerjoin(User, LessonCancellation.created_by == User.id)
+        .order_by(LessonCancellation.created_at.desc())
+    )
+    if group_id:
+        stmt = stmt.where(LessonCancellation.group_id == group_id)
+
+    rows = (await db.execute(stmt)).all()
+    result = []
+    for lc, g, u in rows:
+        d = _cancel_dict(lc)
+        d["group_name"]     = g.name if g else None
+        d["group_subject"]  = g.subject if g else None
+        d["teacher_name"]   = f"{u.first_name} {u.last_name or ''}".strip() if u else None
+        d["is_extra"]       = bool(lc.reason and lc.reason.startswith("[extra_lesson]"))
+        result.append(d)
+    return result
+
+
+# ─── To'lov korreksiyasi hisoblash ──────────────────────────────────
 
 async def _create_adjustment(
     db: AsyncSession,
@@ -262,12 +402,12 @@ async def _create_adjustment(
 def _count_monthly_lessons(schedule: list, ref_date: date) -> int:
     """
     Guruh haftalik jadvalidan oylik darslar sonini hisoblaydi.
-    schedule = [{day: 'monday', start: '09:00', end: '10:30', room: '1'}, ...]
+    schedule = [{day: int (1-7), start: "09:00", end: "10:30", room: "1"}, ...]
     """
     if not schedule:
         return 0
     days_in_month = calendar.monthrange(ref_date.year, ref_date.month)[1]
-    weeks = days_in_month / 7  # taxminiy haftalar soni
+    weeks = days_in_month / 7
     return round(len(schedule) * weeks)
 
 
@@ -282,8 +422,6 @@ async def _get_students(
     return list(rows)
 
 
-# ─── Serializers ──────────────────────────────────────────────────────
-
 def _cancel_dict(r: LessonCancellation) -> dict:
     return {
         "id":               str(r.id),
@@ -292,7 +430,10 @@ def _cancel_dict(r: LessonCancellation) -> dict:
         "student_id":       str(r.student_id) if r.student_id else None,
         "lesson_date":      str(r.lesson_date),
         "reason":           r.reason,
+        "status":           r.status,
         "payment_adjusted": r.payment_adjusted,
+        "reviewed_by":      str(r.reviewed_by) if r.reviewed_by else None,
+        "reviewed_at":      r.reviewed_at.isoformat() if r.reviewed_at else None,
         "created_at":       r.created_at.isoformat(),
     }
 

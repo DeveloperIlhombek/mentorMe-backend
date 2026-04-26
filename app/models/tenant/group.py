@@ -29,3 +29,6 @@ class Group(Base):
     status:      Mapped[str]                 = mapped_column(String(20), default="active")  # active | completed | paused
     created_at:  Mapped[datetime]            = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:  Mapped[datetime]            = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # O'qituvchi baholashni topshirishi kerak bo'lgan kun va soat (oylik)
+    progress_deadline_day:  Mapped[int] = mapped_column(Integer, nullable=False, default=25)
+    progress_deadline_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=23)
