@@ -70,6 +70,20 @@ async def get_child_attendance(
     return ok(result)
 
 
+@router.get("/children/{student_id}/assessment")
+async def get_child_assessment(
+    student_id: uuid.UUID,
+    month: Optional[int] = Query(None),
+    year:  Optional[int] = Query(None),
+    db:    AsyncSession  = Depends(get_tenant_session),
+    _:     dict          = Depends(require_parent),
+):
+    """Farzandning oylik baholash natijalari."""
+    from app.services import student_progress as svc
+    scores = await svc.get_student_scores(db, student_id, month, year)
+    return ok(scores)
+
+
 @router.get("/children/{student_id}/payments")
 async def get_child_payments(
     student_id: uuid.UUID,

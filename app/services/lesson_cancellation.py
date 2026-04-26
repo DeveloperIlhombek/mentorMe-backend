@@ -325,6 +325,7 @@ async def list_pending(
         select(LessonCancellation, Group, User)
         .outerjoin(Group, LessonCancellation.group_id == Group.id)
         .outerjoin(User, LessonCancellation.created_by == User.id)
+        .where(LessonCancellation.status == "pending")
         .order_by(LessonCancellation.created_at.desc())
     )
     if group_id:

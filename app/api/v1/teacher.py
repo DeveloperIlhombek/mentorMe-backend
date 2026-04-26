@@ -226,42 +226,110 @@ async def get_today_schedule(
                         "is_extra":       False,
                     })
 
-    # Extra darslar — lesson_cancellations.adj_type='extra' va lesson_date=today
-    try:
-        from app.models.tenant.lesson_cancellation import LessonCancellation
-        extra_stmt = (
-            select(LessonCancellation, Group)
-            .join(Group, LessonCancellation.group_id == Group.id)
-            .where(
-                and_(
-                    LessonCancellation.lesson_date == today,
-                    Group.teacher_id == teacher.id,
-                )
+    # Tasdiqlangan dars o'zgarishlari (faqat status='approved')
+    from app.models.tenant.lesson_cancellation import LessonCancellation
+    lc_stmt = (
+        select(LessonCancellation, Group)
+        .join(Group, LessonCancellation.group_id == Group.id)
+        .where(
+            and_(
+                LessonCancellation.lesson_date == today,
+                LessonCancellation.status      == "approved",
+                Group.teacher_id               == teacher.id,
             )
         )
-        extra_rows = (await db.execute(extra_stmt)).all()
-        seen_extra = {(str(lc.group_id), lc.lesson_date) for lc, _ in extra_rows}
-        for lc, g in extra_rows:
-            # Jadvalda allaqachon ko'rsatilmagan bo'lsa
-            key = (str(g.id), today)
+    )
+    lc_rows = (await db.execute(lc_stmt)).all()
+
+    # Bekor qilingan guruhlar (scope='group') — bu guruhning bugungi darsini yashiramiz
+    cancelled_group_ids: set = set()
+    for lc, _g in lc_rows:
+        is_extra = lc.reason and lc.reason.startswith("[extra_lesson]")
+        if not is_extra and lc.scope == "group":
+            cancelled_group_ids.add(str(lc.group_id))
+
+    # Oddiy jadval — bekor qilinmaganlarni ko'rsatamiz
+    today_lessons = [l for l in today_lessons if l["group_id"] not in cancelled_group_ids]
+
+    # Tasdiqlangan qo'shimcha darslar
+    for lc, g in lc_rows:
+        is_extra = lc.reason and lc.reason.startswith("[extra_lesson]")
+        if is_extra:
             slot = (g.schedule or [{}])[0]
+            sc_stmt = select(func.count()).select_from(
+                select(StudentGroup).where(
+                    and_(StudentGroup.group_id == g.id, StudentGroup.is_active == True)
+                ).subquery()
+            )
+            sc = (await db.execute(sc_stmt)).scalar_one() or 0
             today_lessons.append({
-                "group_id":       str(g.id),
-                "group_name":     g.name,
-                "subject":        g.subject,
-                "start":          slot.get("start", ""),
-                "end":            slot.get("end", ""),
-                "room":           slot.get("room"),
-                "students_count": 0,
-                "attendance_done":False,
-                "is_extra":       True,
-                "reason":         lc.reason,
+                "group_id":        str(g.id),
+                "group_name":      g.name,
+                "subject":         g.subject,
+                "start":           slot.get("start", ""),
+                "end":             slot.get("end", ""),
+                "room":            slot.get("room"),
+                "students_count":  sc,
+                "attendance_done": False,
+                "is_extra":        True,
+                "reason":          lc.reason,
             })
-    except Exception:
-        pass   # jadval yo'q bo'lsa e'tiborsiz
 
     today_lessons.sort(key=lambda x: x.get("start") or "")
     return ok(today_lessons)
+
+
+@router.get("/groups/{group_id}/pending-students")
+async def get_pending_students(
+    group_id: uuid.UUID,
+    db:  AsyncSession = Depends(get_tenant_session),
+    tkn: dict         = Depends(require_teacher),
+):
+    """
+    Bu guruhga qo'shilish so'rovi yuborilgan, lekin hali tasdiqlanmagan o'quvchilar.
+    pending_group_ids ichida group_id bor va is_approved=False, is_rejected=False.
+    """
+    from app.models.tenant.student import Student
+    from app.models.tenant.user import User
+    from sqlalchemy import cast
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    gid_str = str(group_id)
+    stmt = (
+        select(Student, User)
+        .join(User, Student.user_id == User.id)
+        .where(
+            and_(
+                Student.is_approved == False,
+                Student.is_rejected == False,
+                Student.is_active   == False,
+                Student.pending_group_ids.cast(JSONB).contains([gid_str]),
+            )
+        )
+        .order_by(User.first_name)
+    )
+    rows = (await db.execute(stmt)).all()
+    return ok([{
+        "id":         str(s.id),
+        "first_name": u.first_name,
+        "last_name":  u.last_name or "",
+        "phone":      u.phone,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+    } for s, u in rows])
+
+
+@router.get("/students/{student_id}/assessment")
+async def get_student_assessment(
+    student_id: uuid.UUID,
+    month: Optional[int] = None,
+    year:  Optional[int] = None,
+    db:  AsyncSession = Depends(get_tenant_session),
+    _:   dict         = Depends(require_teacher),
+):
+    """O'quvchining oylik baholash natijalari (teacher ko'rishi uchun)."""
+    from app.services import student_progress as svc
+    scores = await svc.get_student_scores(db, student_id, month, year)
+    return ok(scores)
 
 
 @router.post("/attendance", status_code=201)
