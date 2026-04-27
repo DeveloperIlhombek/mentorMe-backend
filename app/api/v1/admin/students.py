@@ -23,7 +23,7 @@ from app.core.dependencies import (
     require_teacher,
     get_optional_branch_filter,
 )
-from app.core.exceptions import StudentNotFound
+from app.core.exceptions import AuthInsufficientRole, StudentNotFound
 from app.models.tenant import Notification
 from app.models.tenant.student import Student
 from app.models.tenant.user import User
@@ -205,9 +205,15 @@ async def add_to_group(
     student_id: uuid.UUID,
     group_id:   uuid.UUID,
     db:  AsyncSession = Depends(get_tenant_session),
-    tkn: dict         = Depends(require_inspector),     # inspektor ham qo'shadi
+    tkn: dict         = Depends(require_inspector),
+    branch_filter: Optional[str] = Depends(get_optional_branch_filter),
 ):
     from app.models.tenant.group import Group
+    # Inspektor faqat o'z filiali guruhiga o'quvchi qo'sha oladi
+    if branch_filter:
+        group_obj = (await db.execute(select(Group).where(Group.id == group_id))).scalar_one_or_none()
+        if not group_obj or str(group_obj.branch_id) != branch_filter:
+            raise AuthInsufficientRole()
     result = await student_svc.add_to_group(db, student_id, group_id)
 
     # Bildirishnoma: admin + inspektorlarga
@@ -240,9 +246,15 @@ async def remove_from_group(
     student_id: uuid.UUID,
     group_id:   uuid.UUID,
     db:  AsyncSession = Depends(get_tenant_session),
-    tkn: dict         = Depends(require_inspector),     # inspektor ham chiqaradi
+    tkn: dict         = Depends(require_inspector),
+    branch_filter: Optional[str] = Depends(get_optional_branch_filter),
 ):
     from app.models.tenant.group import Group
+    # Inspektor faqat o'z filiali guruhidan o'quvchi chiqara oladi
+    if branch_filter:
+        group_obj = (await db.execute(select(Group).where(Group.id == group_id))).scalar_one_or_none()
+        if not group_obj or str(group_obj.branch_id) != branch_filter:
+            raise AuthInsufficientRole()
     await student_svc.remove_from_group(db, student_id, group_id)
 
     # Bildirishnoma

@@ -144,6 +144,8 @@ async def update(
     if data.monthly_fee  is not None: group.monthly_fee  = data.monthly_fee
     if data.max_students is not None: group.max_students = data.max_students
     if data.status       is not None: group.status       = data.status
+    if data.start_date   is not None: group.start_date   = data.start_date
+    if data.end_date     is not None: group.end_date     = data.end_date
     if data.schedule     is not None:
         group.schedule = [s.model_dump() for s in data.schedule]
 
@@ -152,12 +154,23 @@ async def update(
 
 
 async def delete(db: AsyncSession, group_id: uuid.UUID) -> None:
-    """Guruhni 'completed' holatiga o'tkazish (soft delete)."""
+    """Guruhni to'liq o'chirish. To'lovlarda group_id NULLga o'tadi, davomat yozuvlari o'chiriladi."""
+    from sqlalchemy import update as sa_update, delete as sa_delete
+    from app.models.tenant.attendance import Attendance
+    from app.models.tenant.payment import Payment
+
     stmt = select(Group).where(Group.id == group_id)
     group = (await db.execute(stmt)).scalar_one_or_none()
     if not group:
         raise GroupNotFound()
-    group.status = "completed"
+
+    # To'lov tarixini saqlab, faqat guruh havolasini tozalaymiz
+    await db.execute(sa_update(Payment).where(Payment.group_id == group_id).values(group_id=None))
+    # Davomat yozuvlarini o'chiramiz
+    await db.execute(sa_delete(Attendance).where(Attendance.group_id == group_id))
+
+    # Guruhni o'chiramiz (StudentGroup va LessonCancellation CASCADE orqali o'chadi)
+    await db.delete(group)
     await db.commit()
 
 

@@ -12,10 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import (
     get_optional_branch_filter,
     get_tenant_session,
-    require_admin,
     require_inspector,
     require_teacher,
 )
+from app.core.exceptions import AuthInsufficientRole
 from app.schemas import GroupCreate, GroupUpdate, ok
 from app.services import group as group_svc
 
@@ -52,9 +52,12 @@ async def list_groups(
 async def create_group(
     data: GroupCreate,
     db:   AsyncSession = Depends(get_tenant_session),
-    _:    dict         = Depends(require_inspector),
+    tkn:  dict         = Depends(require_inspector),
+    branch_filter: Optional[str] = Depends(get_optional_branch_filter),
 ):
-    """Yangi guruh yaratish."""
+    """Yangi guruh yaratish. Inspektor uchun branch_id avtomatik o'rnatiladi."""
+    if branch_filter:
+        data = data.model_copy(update={"branch_id": uuid.UUID(branch_filter)})
     result = await group_svc.create(db, data)
     return ok(result)
 
@@ -76,8 +79,13 @@ async def update_group(
     data: GroupUpdate,
     db:   AsyncSession = Depends(get_tenant_session),
     _:    dict         = Depends(require_inspector),
+    branch_filter: Optional[str] = Depends(get_optional_branch_filter),
 ):
-    """Guruh ma'lumotlarini yangilash."""
+    """Guruh ma'lumotlarini yangilash. Inspektor faqat o'z filiali guruhini yangilay oladi."""
+    if branch_filter:
+        existing = await group_svc.get_by_id(db, group_id)
+        if existing.get("branch_id") != branch_filter:
+            raise AuthInsufficientRole()
     result = await group_svc.update(db, group_id, data)
     return ok(result)
 
@@ -86,9 +94,14 @@ async def update_group(
 async def delete_group(
     group_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_session),
-    _:  dict         = Depends(require_admin),
+    _:  dict         = Depends(require_inspector),
+    branch_filter: Optional[str] = Depends(get_optional_branch_filter),
 ):
-    """Guruhni yopish (status → completed)."""
+    """Guruhni o'chirish. Inspektor faqat o'z filiali guruhini o'chira oladi."""
+    if branch_filter:
+        existing = await group_svc.get_by_id(db, group_id)
+        if existing.get("branch_id") != branch_filter:
+            raise AuthInsufficientRole()
     await group_svc.delete(db, group_id)
 
 

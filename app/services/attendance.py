@@ -20,6 +20,7 @@ from app.models.tenant import (
     Group,
     Notification,
     Student,
+    StudentGroup,
     User,
     XpTransaction,
 )
@@ -63,15 +64,13 @@ async def _is_late_submission(
         if branch and hasattr(branch, "attendance_deadline_hours"):
             deadline_hours = branch.attendance_deadline_hours or 2
 
-    # O'sha kunning hafta nomini topish
-    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    weekday_name = day_names[lesson_date.weekday()]
-
     # Guruh jadvalidan o'sha kuni uchun dars tugash vaqtini topish
+    # schedule.day = isoweekday (1=Du...7=Ya)
+    lesson_dow = lesson_date.isoweekday()
     schedule = group.schedule or []
     end_time_str = None
     for slot in schedule:
-        if isinstance(slot, dict) and slot.get("day", "").lower() == weekday_name:
+        if isinstance(slot, dict) and slot.get("day") == lesson_dow:
             end_time_str = slot.get("end")
             break
 
@@ -304,6 +303,132 @@ async def get_summary(
         "excused": excused,
         "total": total,
         "percent": pct,
+    }
+
+
+async def get_stats_for_date(
+    db: AsyncSession,
+    date_val: date,
+    branch_id: Optional[uuid.UUID] = None,
+) -> dict:
+    """
+    Berilgan kun uchun TO'G'RI davomat statistikasi.
+
+    Denominator: o'sha kuni (hafta kuniga qarab) dars bo'lgan guruhlardagi
+                 barcha aktiv o'quvchilar soni (StudentGroup orqali).
+    Numerator:   o'sha guruhlarda present/late belgilangan o'quvchilar.
+
+    Agar bitta guruh davomat belgilasa ham, qolgan guruhlar (dars bo'lganlar)
+    denominatorda hisoblanadi → to'g'ri foiz ko'rsatiladi.
+    """
+    from sqlalchemy import case as sa_case
+
+    day_dow = date_val.isoweekday()   # 1=Du ... 7=Ya
+
+    # 1. O'sha kuni dars bo'lgan faol guruhlar
+    groups_stmt = select(Group).where(Group.status == "active")
+    if branch_id:
+        groups_stmt = groups_stmt.where(Group.branch_id == branch_id)
+    all_groups = (await db.execute(groups_stmt)).scalars().all()
+
+    groups_with_class = [
+        g for g in all_groups
+        if any(s.get("day") == day_dow for s in (g.schedule or []))
+    ]
+    group_ids = [g.id for g in groups_with_class]
+
+    if not group_ids:
+        return {
+            "expected": 0, "present": 0, "late": 0, "absent": 0,
+            "pct": 0.0, "groups_with_class": 0, "groups_marked": 0,
+        }
+
+    # 2. Kutilayotgan o'quvchilar — o'sha guruhlardagi DISTINCT aktiv o'quvchilar
+    expected = (await db.execute(
+        select(func.count(func.distinct(StudentGroup.student_id))).where(
+            StudentGroup.group_id.in_(group_ids),
+            StudentGroup.is_active == True,
+        )
+    )).scalar_one() or 0
+
+    if expected == 0:
+        return {
+            "expected": 0, "present": 0, "late": 0, "absent": 0,
+            "pct": 0.0, "groups_with_class": len(group_ids), "groups_marked": 0,
+        }
+
+    # 3. Kelgan o'quvchilar — DISTINCT student_id (bir o'quvchi 2 guruhda bo'lsa ham 1 marta)
+    #    "Hech bo'lmasa bitta guruhda present/late belgilangan o'quvchi kelgan hisoblanadi"
+    present = (await db.execute(
+        select(func.count(func.distinct(Attendance.student_id))).where(
+            Attendance.date     == date_val,
+            Attendance.group_id.in_(group_ids),
+            Attendance.status.in_(["present", "late"]),
+        )
+    )).scalar_one() or 0
+
+    # 4. Nechta guruh davomat kiritgan
+    groups_marked = (await db.execute(
+        select(func.count(func.distinct(Attendance.group_id))).where(
+            Attendance.date     == date_val,
+            Attendance.group_id.in_(group_ids),
+        )
+    )).scalar_one() or 0
+
+    # absent = belgilangan bor, lekin hech qayerda present/late emas
+    absent_q = (await db.execute(
+        select(func.count(func.distinct(Attendance.student_id))).where(
+            Attendance.date     == date_val,
+            Attendance.group_id.in_(group_ids),
+            Attendance.status   == "absent",
+        )
+    )).scalar_one() or 0
+    # Agar o'quvchi bir guruhda absent, boshqasida present bo'lsa → kelgan hisoblanadi
+    absent = max(0, absent_q - present)
+
+    pct = round(min(present / expected * 100, 100.0), 1) if expected > 0 else 0.0
+
+    return {
+        "expected":          expected,
+        "present":           present,
+        "late":              0,       # distinct level da late alohida hisoblanmaydi
+        "absent":            absent,
+        "pct":               pct,
+        "groups_with_class": len(group_ids),
+        "groups_marked":     groups_marked,
+    }
+
+
+async def get_group_monthly_pcts(
+    db: AsyncSession,
+    group_ids: list,
+    month: int,
+    year: int,
+) -> dict:
+    """
+    Har bir guruh uchun oylik davomat foizini qaytaradi: {group_id_str: pct}.
+    Faqat davomat yozuvlari mavjud guruhlar uchun hisobnaydi.
+    """
+    from sqlalchemy import case as sa_case, extract
+
+    if not group_ids:
+        return {}
+
+    rows = (await db.execute(
+        select(
+            Attendance.group_id,
+            func.count(Attendance.id).label("total"),
+            func.count(sa_case((Attendance.status.in_(["present", "late"]), 1))).label("present"),
+        ).where(
+            Attendance.group_id.in_(group_ids),
+            extract("month", Attendance.date) == month,
+            extract("year",  Attendance.date) == year,
+        ).group_by(Attendance.group_id)
+    )).all()
+
+    return {
+        str(row.group_id): round(row.present / row.total * 100, 1) if row.total else 0.0
+        for row in rows
     }
 
 

@@ -86,42 +86,38 @@ async def get_weekly_stats(
 ):
     """
     Dashboard uchun: oxirgi 7 kunlik davomat statistikasi.
-    Parametrsiz ishlaydi.
+
+    Denominator: o'sha kuni dars bo'lgan guruhlardagi BARCHA o'quvchilar soni.
+    Bu formula: 'darsga kelishi kerak bo'lganlardan necha foizi keldi'.
     """
     from datetime import date, timedelta
-    from sqlalchemy import func, case
+    import uuid as _uuid
 
     today = date.today()
-    days  = [(today - timedelta(days=i)) for i in range(6, -1, -1)]  # 7 kun (eski → yangi)
+    days  = [(today - timedelta(days=i)) for i in range(6, -1, -1)]
+
+    branch_uuid = _uuid.UUID(branch_filter) if branch_filter else None
 
     result = []
     for d in days:
-        stmt = (
-            select(
-                func.count(Attendance.id).label("total"),
-                func.count(case((Attendance.status == "present", 1))).label("present"),
-                func.count(case((Attendance.status == "late",    1))).label("late"),
-            )
-            .where(Attendance.date == d)
-        )
-        row = (await db.execute(stmt)).first()
-        total   = (row.total   or 0) if row else 0
-        present = (row.present or 0) if row else 0
-        late    = (row.late    or 0) if row else 0
-
-        pct = round((present + late) / total * 100) if total > 0 else 0
-
+        stats = await att_svc.get_stats_for_date(db, d, branch_id=branch_uuid)
         result.append({
-            "date":    d.isoformat(),
-            "day":     ["Du","Se","Ch","Pa","Ju","Sh","Ya"][d.weekday()],
-            "total":   total,
-            "present": present,
-            "late":    late,
-            "absent":  total - present - late,
-            "pct":     pct,
+            "date":              d.isoformat(),
+            "day":               ["Du","Se","Ch","Pa","Ju","Sh","Ya"][d.weekday()],
+            "expected":          stats["expected"],
+            "present":           stats["present"],
+            "late":              stats["late"],
+            "absent":            stats["absent"],
+            "pct":               stats["pct"],
+            "groups_with_class": stats["groups_with_class"],
+            "groups_marked":     stats["groups_marked"],
         })
 
-    avg_pct = round(sum(r["pct"] for r in result) / len(result)) if result else 0
+    # avg_pct: faqat dars bo'lgan kunlar bo'yicha hisoblash
+    days_with_class = [r for r in result if r["expected"] > 0]
+    avg_pct = round(
+        sum(r["pct"] for r in days_with_class) / len(days_with_class)
+    ) if days_with_class else 0
 
     return ok({"days": result, "avg_pct": avg_pct})
 

@@ -431,6 +431,29 @@ async def reject(
     return await get_by_id(db, student_id)
 
 
+async def add_to_group(
+    db: AsyncSession,
+    student_id: uuid.UUID,
+    group_id: uuid.UUID,
+) -> dict:
+    """O'quvchini guruhga qo'shish. Avval chiqarilgan bo'lsa — qayta faollashtiradi."""
+    # Avvalgi yozuv bormi?
+    existing_stmt = select(StudentGroup).where(
+        and_(StudentGroup.student_id == student_id, StudentGroup.group_id == group_id)
+    )
+    existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+    if existing:
+        if existing.is_active:
+            # Allaqachon guruhda
+            return await get_by_id(db, student_id)
+        existing.is_active = True
+        existing.left_at   = None
+    else:
+        db.add(StudentGroup(student_id=student_id, group_id=group_id))
+    await db.commit()
+    return await get_by_id(db, student_id)
+
+
 async def remove_from_group(
     db: AsyncSession,
     student_id: uuid.UUID,

@@ -38,6 +38,8 @@ class GroupUpdate(BaseModel):
     monthly_fee:  Optional[float] = None
     max_students: Optional[int]   = None
     status:       Optional[str]   = None
+    start_date:   Optional[date]  = None
+    end_date:     Optional[date]  = None
 
 
 class GroupOut(BaseModel):

@@ -295,30 +295,20 @@ async def get_branch_dashboard(
     )).scalar_one() or Decimal("0")
 
     # ── Haftalik davomat trend ─────────────────────────────────────
+    from app.services import attendance as att_svc
     weekly_trend = []
     for i in range(6, -1, -1):
         d = today - timedelta(days=i)
-        row = (await db.execute(
-            select(
-                func.count(Attendance.id).label("total"),
-                func.count(
-                    Attendance.id if True else None
-                ).filter(Attendance.status.in_(["present","late"])).label("present"),
-            )
-            .join(Student, Attendance.student_id == Student.id)
-            .where(
-                Student.branch_id == branch_id,
-                Attendance.date   == d,
-            )
-        )).first()
-        total   = row.total   if row else 0
-        present = row.present if row else 0
+        day_stats = await att_svc.get_stats_for_date(db, d, branch_id=branch_id)
         weekly_trend.append({
-            "date":    d.isoformat(),
-            "weekday": d.strftime("%a"),
-            "total":   total,
-            "present": present,
-            "pct":     round(present / total * 100, 1) if total else 0,
+            "date":              d.isoformat(),
+            "weekday":           d.strftime("%a"),
+            "expected":          day_stats["expected"],
+            "present":           day_stats["present"],
+            "absent":            day_stats["absent"],
+            "pct":               day_stats["pct"],
+            "groups_with_class": day_stats["groups_with_class"],
+            "groups_marked":     day_stats["groups_marked"],
         })
 
     # ── Oxirgi to'lovlar (5 ta) ────────────────────────────────────
@@ -404,36 +394,48 @@ async def get_branch_dashboard(
         )
     )).scalar_one()
 
-    # ── Oxirgi davomat ─────────────────────────────────────────────
-    recent_attendance = (await db.execute(
-        select(
-            func.count(Attendance.id).label("total"),
-            func.count(Attendance.id).filter(
-                Attendance.status.in_(["present","late"])
-            ).label("present"),
-            func.count(Attendance.id).filter(
-                Attendance.status == "absent"
-            ).label("absent"),
-        )
-        .join(Student, Attendance.student_id == Student.id)
-        .where(
-            Student.branch_id == branch_id,
-            Attendance.date   == today,
-        )
-    )).first()
-
+    # ── Bugungi davomat (to'g'ri denominator bilan) ────────────────
+    today_stats = await att_svc.get_stats_for_date(db, today, branch_id=branch_id)
     today_att = {
-        "total":   recent_attendance.total   if recent_attendance else 0,
-        "present": recent_attendance.present if recent_attendance else 0,
-        "absent":  recent_attendance.absent  if recent_attendance else 0,
-        "pct":     round(
-            recent_attendance.present / recent_attendance.total * 100, 1
-        ) if recent_attendance and recent_attendance.total else 0,
+        "expected":          today_stats["expected"],
+        "present":           today_stats["present"],
+        "absent":            today_stats["absent"],
+        "pct":               today_stats["pct"],
+        "groups_with_class": today_stats["groups_with_class"],
+        "groups_marked":     today_stats["groups_marked"],
     }
 
+    # ── Zaif guruhlar (oylik davomat < 80%) ────────────────────────
+    branch_groups_rows = (await db.execute(
+        select(Group).where(Group.branch_id == branch_id, Group.status == "active")
+    )).scalars().all()
+    branch_group_ids = [g.id for g in branch_groups_rows]
+
+    group_pcts = await att_svc.get_group_monthly_pcts(db, branch_group_ids, m, y)
+
+    weak_groups = []
+    for g in branch_groups_rows:
+        pct_val = group_pcts.get(str(g.id), None)
+        # Davomat belgilanmagan guruhlar weak_groups ga kirmaydi
+        if pct_val is not None and pct_val < 80:
+            weak_groups.append({
+                "id":             str(g.id),
+                "name":           g.name,
+                "subject":        g.subject,
+                "attendance_pct": pct_val,
+            })
+
     return {
-        "branch_id":     str(branch_id),
-        "period":        {"month": m, "year": y},
+        "branch_id": str(branch_id),
+        "period":    {"month": m, "year": y},
+        # Inspector dashboard hook'i uchun "stats" key
+        "stats": {
+            "total_students":       student_count,
+            "total_teachers":       teacher_count,
+            "total_groups":         group_count,
+            "monthly_income":       float(income),
+            "today_attendance_pct": today_att["pct"],
+        },
         "summary": {
             "student_count": student_count,
             "teacher_count": teacher_count,
@@ -441,19 +443,20 @@ async def get_branch_dashboard(
             "debt_count":    debt_count,
         },
         "finance": {
-            "income":          float(income),
-            "expenses":        float(expenses),
-            "teacher_salary":  float(teacher_salary),
-            "total_debt":      float(total_debt),
-            "net":             float(income) - float(expenses) - float(teacher_salary),
+            "income":         float(income),
+            "expenses":       float(expenses),
+            "teacher_salary": float(teacher_salary),
+            "total_debt":     float(total_debt),
+            "net":            float(income) - float(expenses) - float(teacher_salary),
         },
-        "today_attendance":  today_att,
-        "weekly_trend":      weekly_trend,
-        "today_groups":      today_groups,
-        "recent_payments":   recent_payments,
-        "new_students":      new_students,
-        "pending_requests":  pending_requests,
-        "pending_expenses":  pending_expenses,
+        "today_attendance": today_att,
+        "weekly_trend":     weekly_trend,
+        "today_groups":     today_groups,
+        "weak_groups":      weak_groups,
+        "recent_payments":  recent_payments,
+        "new_students":     new_students,
+        "pending_requests": pending_requests,
+        "pending_expenses": pending_expenses,
     }
 
 
