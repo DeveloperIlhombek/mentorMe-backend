@@ -12,6 +12,7 @@ from app.core.security import hash_password
 from app.models.tenant import Student, Teacher, User
 from app.models.tenant.group import Group
 from app.schemas import ok
+from app.services import group as group_svc
 
 router = APIRouter(prefix="/trash", tags=["trash"])
 
@@ -299,8 +300,7 @@ async def permanent_delete_group(
     if not group:
         from app.core.exceptions import EduSaaSException
         raise EduSaaSException(404, "NOT_FOUND", "Nofaol guruh topilmadi")
-    await db.delete(group)
-    await db.commit()
+    await group_svc.delete(db, group_id)
     return ok({"message": "Guruh doimiy o'chirildi"})
 
 
