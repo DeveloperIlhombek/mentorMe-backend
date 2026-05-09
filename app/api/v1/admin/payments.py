@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_tenant_session, require_admin, require_inspector, get_optional_branch_filter
+from app.core.dependencies import get_tenant_session, get_tenant_slug, require_admin, require_inspector, get_optional_branch_filter
 from app.schemas import PaymentCreate, ok
 from app.services import payment as payment_svc
 
@@ -47,14 +47,16 @@ async def list_payments(
 
 @router.post("", status_code=201)
 async def create_payment(
-    data: PaymentCreate,
-    db:   AsyncSession = Depends(get_tenant_session),
-    tkn:  dict         = Depends(require_inspector),
+    data:        PaymentCreate,
+    db:          AsyncSession = Depends(get_tenant_session),
+    tenant_slug: str          = Depends(get_tenant_slug),
+    tkn:         dict         = Depends(require_inspector),
 ):
     """Naqd to'lov qo'shish (admin yoki inspektor tomonidan)."""
     result = await payment_svc.create_manual(
         db, data,
         received_by=uuid.UUID(tkn["sub"]),
+        tenant_slug=tenant_slug,
     )
     return ok(result)
 

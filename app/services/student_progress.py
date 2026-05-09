@@ -110,6 +110,7 @@ async def bulk_submit_assessment(
     year: int,
     teacher_id: uuid.UUID,  # teachers.id (PK)
     scores: List[dict],     # [{student_id, score, notes?}]
+    tenant_slug: Optional[str] = None,
 ) -> dict:
     """
     Guruh uchun barcha o'quvchilar baholashini bir vaqtda saqlash.
@@ -171,6 +172,50 @@ async def bulk_submit_assessment(
             "score":      score,
             "is_late":    is_late,
         })
+
+    # ── Notification: o'quvchi va ota-onaga yangi baho haqida xabar ──
+    if tenant_slug and saved:
+        from app.models.tenant.student import Student
+        from app.models.tenant.user    import User
+        from app.services.notification_service import NotificationService
+
+        svc = NotificationService(db, tenant_slug)
+        for entry in saved:
+            sid_uuid = uuid.UUID(entry["student_id"])
+            stud = (await db.execute(
+                select(Student).where(Student.id == sid_uuid)
+            )).scalar_one_or_none()
+            if not stud:
+                continue
+            stud_user = (await db.execute(
+                select(User).where(User.id == stud.user_id)
+            )).scalar_one_or_none()
+            stud_name = (stud_user.first_name if stud_user else "Siz")
+            score_str = f"{entry['score']:.0f}%"
+            title = "📊 Yangi baho qo'yildi"
+            body  = f"{month}/{year} oyi uchun baho: <b>{score_str}</b>"
+
+            # O'quvchining o'ziga
+            if stud.user_id:
+                await svc.enqueue(
+                    user_id=stud.user_id,
+                    category="grade", type="new_grade", priority="normal",
+                    title=title, body=body,
+                    data={"score": entry["score"], "month": month, "year": year,
+                          "group_id": str(group_id)},
+                    dedupe_key=f"grade:{year}:{month}:{group_id}:{sid_uuid}:student",
+                )
+            # Ota-onaga
+            if stud.parent_id:
+                await svc.enqueue(
+                    user_id=stud.parent_id,
+                    category="grade", type="new_grade_child", priority="normal",
+                    title=f"📊 {stud_name} — yangi baho",
+                    body=f"{month}/{year} oyi uchun baho: <b>{score_str}</b>",
+                    data={"student_id": str(sid_uuid), "score": entry["score"],
+                          "month": month, "year": year, "group_id": str(group_id)},
+                    dedupe_key=f"grade:{year}:{month}:{group_id}:{sid_uuid}:parent",
+                )
 
     await db.commit()
     return {

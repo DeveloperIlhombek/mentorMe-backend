@@ -20,7 +20,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.core.config import settings
-from bot.handlers import start, student, teacher, parent, admin
+from bot.handlers import start, student, teacher, parent, admin, preferences
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(teacher.router)
     dp.include_router(parent.router)
     dp.include_router(admin.router)
+    dp.include_router(preferences.router)
     return dp
 
 

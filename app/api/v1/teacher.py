@@ -19,7 +19,7 @@ from pydantic import BaseModel as _BaseModel
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_tenant_session, require_teacher
+from app.core.dependencies import get_tenant_session, get_tenant_slug, require_teacher
 from app.models.tenant import Group, Notification, Teacher, User
 from app.schemas import ok
 from app.schemas.attendance import AttendanceItem
@@ -335,8 +335,9 @@ async def get_student_assessment(
 @router.post("/attendance", status_code=201)
 async def submit_attendance(
     data: _TeacherAttendanceCreate,
-    db:   AsyncSession = Depends(get_tenant_session),
-    tkn:  dict         = Depends(require_teacher),
+    db:          AsyncSession = Depends(get_tenant_session),
+    tenant_slug: str          = Depends(get_tenant_slug),
+    tkn:         dict         = Depends(require_teacher),
 ):
     """Davomat kiritish (o'qituvchi tomonidan)."""
     import datetime
@@ -352,7 +353,7 @@ async def submit_attendance(
         date     = data.date or datetime.date.today(),
         records  = data.get_records(),
     )
-    result = await att_svc.bulk_create(db, bulk, teacher_id)
+    result = await att_svc.bulk_create(db, bulk, teacher_id, tenant_slug=tenant_slug)
     return ok(result)
 
 

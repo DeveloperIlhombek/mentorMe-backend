@@ -24,6 +24,9 @@ from app.api.v1.admin.lesson_cancellations import router as lesson_cancellations
 from app.api.v1.admin.assessment import router as admin_assessment_router
 from app.api.v1.gamification import router as gamification_router
 from app.api.v1.notifications import router as notifications_router
+from app.api.v1.telegram_link import router as telegram_link_router
+from app.api.v1.broadcast import router as broadcast_router
+from app.api.v1.ws import router as ws_router
 from app.api.v1.parent import router as parent_router
 from app.api.v1.student_routes import router as student_router
 from app.api.v1.teacher_progress import router as teacher_progress_router
@@ -62,3 +65,6 @@ api_router.include_router(student_router)
 api_router.include_router(parent_router)
 api_router.include_router(gamification_router)
 api_router.include_router(notifications_router)
+api_router.include_router(telegram_link_router)
+api_router.include_router(broadcast_router)
+api_router.include_router(ws_router)

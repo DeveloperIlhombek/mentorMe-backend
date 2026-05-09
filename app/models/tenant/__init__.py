@@ -14,14 +14,16 @@ from app.models.tenant.student      import Student, StudentGroup
 from app.models.tenant.attendance   import Attendance
 from app.models.tenant.payment      import Payment
 from app.models.tenant.gamification import GamificationProfile, XpTransaction, Achievement, StudentAchievement
-from app.models.tenant.notification import Notification
+from app.models.tenant.notification            import Notification
+from app.models.tenant.notification_preference import NotificationPreference
+from app.models.tenant.broadcast_job           import BroadcastJob
 
 __all__ = [
     "User", "Branch", "Teacher",
     "Group", "Student", "StudentGroup",
     "Attendance", "Payment",
     "GamificationProfile", "XpTransaction", "Achievement", "StudentAchievement",
-    "Notification",
+    "Notification", "NotificationPreference", "BroadcastJob",
 ]
 
 from app.models.tenant.finance import FinanceTransaction, FinanceBalance

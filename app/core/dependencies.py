@@ -5,10 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 
 from app.core.database import AsyncSessionLocal
-from app.core.security import decode_token
+from app.core.security import decode_token, is_valid_tenant_slug, tenant_schema_name
+from app.core.token_blacklist import is_blacklisted
 from app.core.exceptions import (
     AuthTokenExpired,
     AuthInsufficientRole,
+    InvalidTenantSlug,
     TenantNotFound,
 )
 
@@ -33,6 +35,9 @@ async def get_current_token(
     payload = decode_token(credentials.credentials)
     if not payload or payload.get("type") != "access":
         raise AuthTokenExpired()
+    # Blacklist (logout qilingan tokenlar)
+    if await is_blacklisted(payload.get("jti")):
+        raise AuthTokenExpired()
     return payload
 
 
@@ -43,6 +48,12 @@ async def get_tenant_slug(
     slug = x_tenant_slug or (token.get("tenant_slug") if token else None)
     if not slug:
         raise TenantNotFound()
+    if not is_valid_tenant_slug(slug):
+        raise InvalidTenantSlug()
+    # Header va token mos kelishi shart (header injection'dan himoya)
+    if x_tenant_slug and token and token.get("tenant_slug") and \
+       x_tenant_slug != token.get("tenant_slug"):
+        raise AuthInsufficientRole()
     return slug
 
 
@@ -50,7 +61,7 @@ async def get_tenant_session(
     tenant_slug: Annotated[str, Depends(get_tenant_slug)],
 ) -> AsyncSession:
     async with AsyncSessionLocal() as session:
-        schema = f"tenant_{tenant_slug.replace('-', '_')}"
+        schema = tenant_schema_name(tenant_slug)
         await session.execute(text(f'SET search_path TO "{schema}", public'))
         try:
             yield session
@@ -75,7 +86,7 @@ require_admin       = require_role("super_admin", "admin")
 require_inspector   = require_role("super_admin", "admin", "inspector")
 require_teacher     = require_role("super_admin", "admin", "inspector", "teacher")
 require_student     = require_role("super_admin", "admin", "inspector", "teacher", "student")
-require_parent      = require_role("super_admin", "admin", "parent")
+require_parent      = require_role("parent")
 require_any         = require_role("super_admin", "admin", "inspector", "teacher", "student", "parent")
 
 

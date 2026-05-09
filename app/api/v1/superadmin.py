@@ -19,6 +19,11 @@ from app.core.dependencies import require_super_admin
 from app.core.exceptions import TenantNotFound
 from app.models.public.tenant import SubscriptionPlan, Tenant
 from app.schemas import ok
+from app.services.tenant_provisioning import (
+    create_admin_user,
+    create_default_branch,
+    provision_tenant_schema,
+)
 
 router = APIRouter(prefix="/superadmin", tags=["superadmin"])
 
@@ -39,6 +44,13 @@ class TenantCreatePayload(BaseModel):
     bot_username: Optional[str] = None
     custom_domain: Optional[str] = None
     trial_days: int = Field(14, ge=0, le=365)
+
+    # Admin user — yangi tenant yaratilganda darhol admin tayinlash
+    admin_email:      Optional[str] = Field(None, max_length=200)
+    admin_password:   Optional[str] = Field(None, min_length=6, max_length=100)
+    admin_first_name: Optional[str] = Field(None, max_length=100)
+    admin_last_name:  Optional[str] = Field(None, max_length=100)
+    admin_phone:      Optional[str] = Field(None, max_length=20)
 
     @field_validator("slug")
     @classmethod
@@ -286,7 +298,15 @@ async def create_tenant(
     db: AsyncSession = Depends(get_db_session),
     _:  dict         = Depends(require_super_admin),
 ):
-    """Yangi tenant yaratish."""
+    """
+    Yangi tenant yaratish:
+      1. Slug band emasligini tekshirish
+      2. Plan mavjudligini tekshirish (agar berilgan bo'lsa)
+      3. Tenant yozuvi (public.tenants)
+      4. PostgreSQL schema + barcha tenant jadvallari
+      5. Admin foydalanuvchini schema'ga qo'shish (admin_email berilsa)
+      6. Asosiy filial yaratish (admin uchun)
+    """
     existing = (await db.execute(
         select(Tenant).where(Tenant.slug == payload.slug)
     )).scalar_one_or_none()
@@ -299,6 +319,15 @@ async def create_tenant(
         )).scalar_one_or_none()
         if not plan:
             raise HTTPException(status_code=404, detail="Tarif topilmadi")
+
+    # Admin ma'lumotlarini tekshirish — agar email berilsa, parol va ism majburiy
+    has_admin = bool(payload.admin_email)
+    if has_admin:
+        if not payload.admin_password or not payload.admin_first_name:
+            raise HTTPException(
+                status_code=400,
+                detail="admin_email berilsa, admin_password va admin_first_name ham majburiy"
+            )
 
     schema_name = f"tenant_{payload.slug.replace('-', '_')}"
     trial_ends = datetime.now(timezone.utc) + timedelta(days=payload.trial_days)
@@ -321,15 +350,53 @@ async def create_tenant(
     db.add(tenant)
     await db.flush()
 
+    admin_user_id: Optional[str] = None
+    branch_id: Optional[str] = None
+
     try:
-        await db.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'))
+        # 1. Schema + jadvallar
+        await provision_tenant_schema(db, schema_name)
+
+        # 2. Asosiy filial (admin yaratiladigan bo'lsa)
+        if has_admin:
+            branch_id = await create_default_branch(
+                db, schema_name,
+                name=f"{payload.name} — asosiy filial",
+                phone=payload.phone,
+                address=payload.address,
+            )
+            # 3. Admin user
+            admin_user_id = await create_admin_user(
+                db, schema_name,
+                email=payload.admin_email,
+                password=payload.admin_password,
+                first_name=payload.admin_first_name,
+                last_name=payload.admin_last_name,
+                phone=payload.admin_phone or payload.phone,
+                branch_id=branch_id,
+                role="admin",
+            )
     except Exception as exc:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Schema yaratilmadi: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Tenant yaratilmadi: {exc}"
+        )
 
     await db.commit()
     await db.refresh(tenant)
-    return ok(_tenant_dict(tenant))
+
+    response_data = _tenant_dict(tenant)
+    if admin_user_id:
+        response_data["admin"] = {
+            "id":         admin_user_id,
+            "email":      payload.admin_email,
+            "first_name": payload.admin_first_name,
+            "last_name":  payload.admin_last_name,
+            "branch_id":  branch_id,
+            "login_url":  f"/login (tenant_slug: {payload.slug})",
+        }
+    return ok(response_data)
 
 
 @router.get("/tenants/{tenant_id}")
@@ -621,3 +688,77 @@ async def delete_plan(
     plan.is_active = False
     await db.commit()
     return ok({"message": "Tarif o'chirildi", "id": str(plan_id)})
+
+
+# === Tenant schema upgrade (mavjud tenantlarga yangi ustunlar qo'shish) ====
+
+@router.post("/tenants/{tenant_id}/upgrade-schema", status_code=200)
+async def upgrade_tenant_schema_endpoint(
+    tenant_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db_session),
+    _:  dict         = Depends(require_super_admin),
+):
+    """
+    Tenant schema'ga barcha kerakli ustunlarni qo'shadi (008-013 migrations).
+    Idempotent — qayta chaqirilsa xato bermaydi.
+    Eski tenantlar uchun "alembic upgrade head" o'rniga ishlatish mumkin.
+    """
+    from app.services.tenant_provisioning import upgrade_tenant_schema
+
+    tenant = (await db.execute(
+        select(Tenant).where(Tenant.id == tenant_id)
+    )).scalar_one_or_none()
+    if not tenant:
+        raise TenantNotFound()
+
+    result = await upgrade_tenant_schema(db, tenant.schema_name)
+    await db.commit()
+    return ok({
+        "tenant_id":     str(tenant_id),
+        "schema_name":   tenant.schema_name,
+        "applied_count": len(result["applied"]),
+        "errors_count":  len(result["errors"]),
+        "applied":       result["applied"],
+        "errors":        result["errors"][:10],  # faqat birinchi 10 xato
+    })
+
+
+@router.post("/tenants/upgrade-all-schemas", status_code=200)
+async def upgrade_all_tenant_schemas(
+    db: AsyncSession = Depends(get_db_session),
+    _:  dict         = Depends(require_super_admin),
+):
+    """
+    BARCHA faol tenantlar uchun schema upgrade.
+    Mavjud DB'da migration tatbiq etilmagan bo'lsa, bu endpoint
+    barcha tenantlarda yetishmayotgan ustunlarni qo'shadi.
+    """
+    from app.services.tenant_provisioning import upgrade_tenant_schema
+
+    tenants = (await db.execute(
+        select(Tenant).where(Tenant.is_active == True)  # noqa: E712
+    )).scalars().all()
+
+    results = []
+    for t in tenants:
+        try:
+            r = await upgrade_tenant_schema(db, t.schema_name)
+            results.append({
+                "tenant_id":     str(t.id),
+                "tenant_slug":   t.slug,
+                "schema_name":   t.schema_name,
+                "applied_count": len(r["applied"]),
+                "errors_count":  len(r["errors"]),
+            })
+        except Exception as exc:
+            results.append({
+                "tenant_id":   str(t.id),
+                "tenant_slug": t.slug,
+                "error":       str(exc)[:200],
+            })
+
+    await db.commit()
+    return ok({
+        "total_tenants": len(tenants),
+        "results":       results,
+    })

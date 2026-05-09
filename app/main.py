@@ -30,6 +30,14 @@ except Exception:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(f"🚀 EduSaaS v{settings.APP_VERSION} ishga tushdi")
+    # Tenant schemalardagi yetishmayotgan ustunlarni tuzatish (migration o'tmagan
+    # holatlarda 500 xatosini oldini olish).
+    try:
+        from app.core.database import engine
+        from app.core.schema_heal import heal_tenant_schemas
+        await heal_tenant_schemas(engine)
+    except Exception as exc:
+        print(f"⚠️  schema_heal: {exc}")
     # Redis ulanishini tekshirish (birinchi chaqiruvda initsializatsiya)
     from app.core.invite_store import _get_redis
     r = await _get_redis()
@@ -59,17 +67,25 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────
+# Eslatma: Starlette `allow_origins` da glob (`*`) qo'llab-quvvatlanmaydi.
+# Wildcard hostlar uchun `allow_origin_regex` ishlatamiz.
+_static_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://mentor-me-omega.vercel.app",
+    *settings.allowed_origins_list,
+]
+_origin_regex = (
+    r"^https://([a-z0-9-]+\.)*("
+    r"ngrok-free\.app|ngrok-free\.dev|ngrok\.io|"
+    r"vercel\.app"
+    r")$"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "https://*.ngrok-free.app",
-        "https://*.ngrok.io",
-        "https://mentor-me-omega.vercel.app",
-        "https://*.vercel.app",
-        *settings.allowed_origins_list,
-    ],
+    allow_origins=_static_origins,
+    allow_origin_regex=_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -86,13 +102,21 @@ async def edusaas_handler(request: Request, exc: EduSaaSException):
         content={"success": False, "error": exc.detail},
     )
 
+import logging as _logging
+_log = _logging.getLogger("edusaas")
+
+
 @app.exception_handler(Exception)
 async def generic_handler(request: Request, exc: Exception):
+    # To'liq stack-trace serverda log'ga yoziladi, lekin clientga sizib chiqmaydi.
+    _log.exception("Unhandled error on %s %s", request.method, request.url.path)
+    # Development'da xato matni qaytarsak — debug osonroq bo'ladi.
+    detail_msg = str(exc) if not settings.is_production else "Ichki server xatosi"
     return JSONResponse(
         status_code=500,
         content={"success": False, "error": {
             "code": "INTERNAL_ERROR",
-            "message": str(exc),
+            "message": detail_msg,
         }},
     )
 

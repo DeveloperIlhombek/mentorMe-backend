@@ -14,7 +14,9 @@ class TelegramAuthRequest(BaseModel):
 class WebLoginRequest(BaseModel):
     email:       EmailStr
     password:    str
-    tenant_slug: str
+    # tenant_slug ixtiyoriy: super_admin uchun avtomatik 'platform' yoki
+    # email bo'yicha tegishli tenant aniqlanadi.
+    tenant_slug: Optional[str] = None
 
 
 class WebRegisterRequest(BaseModel):

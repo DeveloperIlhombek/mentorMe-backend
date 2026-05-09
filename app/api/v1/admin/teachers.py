@@ -50,7 +50,14 @@ class TeacherUpdate(BaseModel):
 
 
 # ─── Yordamchi ───────────────────────────────────────────────────────
-async def _teacher_dict(teacher: Teacher, user: User) -> dict:
+def _teacher_dict(teacher: Teacher, user: User) -> dict:
+    """Teacher + User'ni JSON-friendly dict'ga aylantirish.
+    Eski tenant schemalar'da bo'lmagan ustunlar uchun getattr fallback."""
+    is_approved      = getattr(teacher, "is_approved", True)
+    created_by       = getattr(teacher, "created_by", None)
+    created_by_role  = getattr(teacher, "created_by_role", None)
+    hired_at         = getattr(teacher, "hired_at", None)
+    created_at       = getattr(teacher, "created_at", None)
     return {
         "id":               str(teacher.id),
         "user_id":          str(teacher.user_id),
@@ -60,16 +67,16 @@ async def _teacher_dict(teacher: Teacher, user: User) -> dict:
         "email":            user.email,
         "avatar_url":       user.avatar_url,
         "is_active":        teacher.is_active,
-        "is_approved":      teacher.is_approved,
-        "created_by":       str(teacher.created_by) if teacher.created_by else None,
-        "created_by_role":  teacher.created_by_role,
+        "is_approved":      is_approved,
+        "created_by":       str(created_by) if created_by else None,
+        "created_by_role":  created_by_role,
         "subjects":         teacher.subjects or [],
         "bio":              teacher.bio,
         "salary_type":      teacher.salary_type,
-        "salary_amount":    float(teacher.salary_amount) if teacher.salary_amount else None,
+        "salary_amount":    float(teacher.salary_amount) if teacher.salary_amount is not None else None,
         "branch_id":        str(teacher.branch_id) if teacher.branch_id else None,
-        "hired_at":         teacher.hired_at.isoformat() if teacher.hired_at else None,
-        "created_at":       teacher.created_at.isoformat(),
+        "hired_at":         hired_at.isoformat() if hired_at else None,
+        "created_at":       created_at.isoformat() if created_at else None,
     }
 
 
@@ -103,7 +110,7 @@ async def list_teachers(
     stmt  = stmt.order_by(User.first_name).offset((page-1)*per_page).limit(per_page)
     rows  = (await db.execute(stmt)).all()
 
-    data  = [await _teacher_dict(t, u) for t, u in rows]
+    data  = [_teacher_dict(t, u) for t, u in rows]
     pages = (total + per_page - 1) // per_page
     return ok(data, {"page": page, "per_page": per_page, "total": total, "total_pages": pages})
 
@@ -149,7 +156,7 @@ async def create_teacher(
     db.add(teacher)
     await db.commit()
 
-    return ok(await _teacher_dict(teacher, user), {"pending_approval": not is_approved})
+    return ok(_teacher_dict(teacher, user), {"pending_approval": not is_approved})
 
 
 @router.get("/pending")
@@ -165,7 +172,7 @@ async def list_pending_teachers(
         .order_by(Teacher.created_at.desc())
     )
     rows = (await db.execute(stmt)).all()
-    return ok([await _teacher_dict(t, u) for t, u in rows])
+    return ok([_teacher_dict(t, u) for t, u in rows])
 
 
 @router.get("/{teacher_id}")
@@ -183,7 +190,7 @@ async def get_teacher(
     if not row:
         from app.core.exceptions import EduSaaSException
         raise EduSaaSException(404, "TEACHER_NOT_FOUND", "O'qituvchi topilmadi")
-    return ok(await _teacher_dict(row[0], row[1]))
+    return ok(_teacher_dict(row[0], row[1]))
 
 
 @router.patch("/{teacher_id}")
@@ -219,7 +226,7 @@ async def update_teacher(
         user.is_active    = data.is_active
 
     await db.commit()
-    return ok(await _teacher_dict(teacher, user))
+    return ok(_teacher_dict(teacher, user))
 
 
 @router.delete("/{teacher_id}", status_code=204)
@@ -261,7 +268,7 @@ async def approve_teacher(
     user.is_active      = True
     teacher.is_active   = True
     await db.commit()
-    return ok(await _teacher_dict(teacher, user))
+    return ok(_teacher_dict(teacher, user))
 
 
 @router.post("/{teacher_id}/reject")

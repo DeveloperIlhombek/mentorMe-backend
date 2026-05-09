@@ -48,6 +48,13 @@ async def cmd_start(message: Message):
     # Deep link parametrini olish
     args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else ""
 
+    # ── Notification linking token (admin tomonidan generate qilingan) ──
+    # Token URL-safe base64 (~43 belgi), prefix yo'q.
+    if args and not args.startswith(("parent_", "tenant_", "inv_")) and len(args) >= 30:
+        handled = await _handle_notification_link_token(message, args, tg_id, full_name)
+        if handled:
+            return
+
     # ── parent_STUDENTID_CODE ──────────────────────────────────────────
     if args.startswith("parent_"):
         await _handle_parent_deep_link(message, args, tg_id)
@@ -130,6 +137,103 @@ async def _handle_tenant_start(message: Message, full_name: str, tg_id: int, ten
             )],
         ])
         await message.answer(text, reply_markup=keyboard)
+
+
+async def _handle_notification_link_token(
+    message: Message, token: str, tg_id: int, full_name: str,
+) -> bool:
+    """
+    Admin generate qilgan deep-link token bilan akkauntni biriktirish.
+    Public schema'da public.telegram_link_tokens jadvalidan izlaymiz.
+    Qaytaradi: True — token ishladi, False — token topilmadi (boshqa handler ga uzatiladi).
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import select, text as sqltext
+    from app.core.database import AsyncSessionLocal
+    from app.models.tenant.user import User as TUser
+    from app.models.public.tenant import Tenant
+    import uuid
+
+    async with AsyncSessionLocal() as pub:
+        row = (await pub.execute(sqltext("""
+            SELECT tenant_slug, user_id, expires_at
+            FROM public.telegram_link_tokens
+            WHERE token = :t
+        """), {"t": token})).first()
+
+        if not row:
+            return False
+
+        tenant_slug, user_id_str, expires_at = row
+        if expires_at < datetime.now(timezone.utc):
+            await pub.execute(sqltext(
+                "DELETE FROM public.telegram_link_tokens WHERE token = :t"
+            ), {"t": token})
+            await pub.commit()
+            await message.answer(
+                "❌ Havola muddati tugagan.\n"
+                "Iltimos, admin sizga yangi havola bersin."
+            )
+            return True
+
+        # Tenant ni olish
+        tenant = (await pub.execute(
+            select(Tenant).where(Tenant.slug == tenant_slug)
+        )).scalar_one_or_none()
+
+    if not tenant:
+        await message.answer("❌ Ta'lim markazi topilmadi.")
+        return True
+
+    schema = tenant.schema_name
+    async with AsyncSessionLocal() as session:
+        await session.execute(sqltext(f'SET search_path TO "{schema}", public'))
+
+        user = (await session.execute(
+            select(TUser).where(TUser.id == uuid.UUID(user_id_str))
+        )).scalar_one_or_none()
+        if not user:
+            await message.answer("❌ Foydalanuvchi topilmadi.")
+            return True
+
+        # Boshqa odam shu telegram_id bilan biriktirilgan emasmi?
+        existing = (await session.execute(
+            select(TUser).where(
+                TUser.telegram_id == tg_id,
+                TUser.id != user.id,
+            )
+        )).scalar_one_or_none()
+        if existing:
+            await message.answer(
+                "⚠️ Sizning Telegram akkauntingiz boshqa profilga biriktirilgan.\n"
+                "Avval admin u profilni bekor qilishi kerak."
+            )
+            return True
+
+        user.telegram_id        = tg_id
+        user.telegram_username  = message.from_user.username
+        user.telegram_linked_at = datetime.now(timezone.utc)
+        user.telegram_link_token      = None
+        user.telegram_link_expires_at = None
+        await session.commit()
+
+    # Token ni public dan o'chirish
+    async with AsyncSessionLocal() as pub:
+        await pub.execute(sqltext(
+            "DELETE FROM public.telegram_link_tokens WHERE token = :t"
+        ), {"t": token})
+        await pub.commit()
+
+    role = user.role
+    locale = user.language_code or "uz"
+    text = (
+        f"✅ <b>Akkaunt muvaffaqiyatli biriktirildi!</b>\n\n"
+        f"🏢 <b>{tenant.name}</b>\n"
+        f"👤 Rol: <b>{_role_label(role)}</b>\n\n"
+        f"Endi siz bildirishnoma olasiz va panelni ochishingiz mumkin."
+    )
+    await message.answer(text, reply_markup=start_keyboard(role, locale))
+    return True
 
 
 async def _handle_parent_deep_link(message: Message, args: str, tg_id: int):

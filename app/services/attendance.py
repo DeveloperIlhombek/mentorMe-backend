@@ -163,9 +163,9 @@ async def bulk_create(
             )
             xp_count += 1
 
-        # Absent: ota-onaga xabar
+        # Absent: ota-onaga xabar (NotificationService orqali — Telegram + in-app)
         elif item.status == "absent":
-            await _notify_parent_absent(db, item.student_id, data.group_id, data.date)
+            await _notify_parent_absent(db, item.student_id, data.group_id, data.date, tenant_slug)
 
     await db.commit()
 
@@ -490,41 +490,63 @@ async def _notify_parent_absent(
     student_id: uuid.UUID,
     group_id: uuid.UUID,
     att_date: date,
+    tenant_slug: Optional[str] = None,
 ) -> None:
     """
-    Kelmagan o'quvchining ota-onasiga bildirishnoma yaratish.
-    Telegram bot keyinchalik bu yozuvlarni o'qib yuboradi.
+    Kelmagan o'quvchining ota-onasiga real-vaqt bildirishnoma:
+    - Telegram (Celery via NotificationService)
+    - In-app (Redis pub/sub)
+    Critical priority — quiet hours/preferences override qiladi.
     """
-    # O'quvchini olish
-    stmt = select(Student).where(Student.id == student_id)
-    student = (await db.execute(stmt)).scalar_one_or_none()
+    student = (await db.execute(
+        select(Student).where(Student.id == student_id)
+    )).scalar_one_or_none()
     if not student or not student.parent_id:
-        return  # Parent bog'lanmagan — xabar yuborib bo'lmaydi
+        return
 
-    # O'quvchi ismi
-    user_stmt = select(User).where(User.id == student.user_id)
-    user = (await db.execute(user_stmt)).scalar_one_or_none()
+    user = (await db.execute(
+        select(User).where(User.id == student.user_id)
+    )).scalar_one_or_none()
     student_name = f"{user.first_name} {user.last_name or ''}".strip() if user else "O'quvchi"
 
-    # Guruh nomi
-    group_stmt = select(Group).where(Group.id == group_id)
-    group = (await db.execute(group_stmt)).scalar_one_or_none()
+    group = (await db.execute(
+        select(Group).where(Group.id == group_id)
+    )).scalar_one_or_none()
     group_name = group.name if group else "Guruh"
 
-    db.add(Notification(
-        user_id=student.parent_id,
-        type="absence_alert",
-        title=f"{student_name} darsga kelmadi",
-        body=(
-            f"{student_name} bugun "
-            f"({att_date.strftime('%d.%m.%Y')}) "
-            f"{group_name} darsiga kelmadi."
-        ),
-                data={
-            "student_id": str(student_id),
-            "group_id":   str(group_id),
-            "date":       att_date.isoformat(),
-        },
-    ))
+    if tenant_slug:
+        from app.services.notification_service import NotificationService
+        svc = NotificationService(db, tenant_slug)
+        await svc.enqueue(
+            user_id=student.parent_id,
+            category="attendance",
+            type="absence_alert",
+            priority="high",
+            title=f"{student_name} darsga kelmadi",
+            body=(
+                f"{student_name} bugun "
+                f"({att_date.strftime('%d.%m.%Y')}) "
+                f"{group_name} darsiga kelmadi."
+            ),
+            data={
+                "student_id": str(student_id),
+                "group_id":   str(group_id),
+                "date":       att_date.isoformat(),
+            },
+            dedupe_key=f"absent:{att_date.isoformat()}:{student_id}",
+        )
+    else:
+        # Legacy fallback — faqat in-app row
+        db.add(Notification(
+            user_id=student.parent_id,
+            type="absence_alert",
+            category="attendance",
+            priority="high",
+            title=f"{student_name} darsga kelmadi",
+            body=f"{student_name} bugun ({att_date.strftime('%d.%m.%Y')}) {group_name} darsiga kelmadi.",
+            data={"student_id": str(student_id), "group_id": str(group_id),
+                  "date": att_date.isoformat()},
+        ))
+
     student.parent_notified = True
 

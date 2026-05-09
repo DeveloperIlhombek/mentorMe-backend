@@ -14,9 +14,21 @@ class AuthTokenExpired(EduSaaSException):
     def __init__(self):
         super().__init__(401, "AUTH_TOKEN_EXPIRED", "Token muddati tugagan")
 
+class AuthInvalidCredentials(EduSaaSException):
+    def __init__(self):
+        super().__init__(401, "AUTH_INVALID_CREDENTIALS", "Email yoki parol noto'g'ri")
+
 class AuthInsufficientRole(EduSaaSException):
     def __init__(self):
         super().__init__(403, "AUTH_INSUFFICIENT_ROLE", "Ruxsat yo'q")
+
+class AuthAccountInactive(EduSaaSException):
+    def __init__(self):
+        super().__init__(403, "AUTH_ACCOUNT_INACTIVE", "Hisob faol emas yoki tasdiqlanmagan")
+
+class InvalidTenantSlug(EduSaaSException):
+    def __init__(self):
+        super().__init__(400, "INVALID_TENANT_SLUG", "Tenant slug yaroqsiz")
 
 class TenantNotFound(EduSaaSException):
     def __init__(self):

@@ -82,6 +82,7 @@ async def create_manual(
     db: AsyncSession,
     data: PaymentCreate,
     received_by: uuid.UUID,
+    tenant_slug: Optional[str] = None,
 ) -> dict:
     """
     Naqd to'lov qo'shish (admin tomonidan qo'lda).
@@ -129,6 +130,37 @@ async def create_manual(
         )
     except Exception:
         pass  # Moliya moduli ishlamasa asosiy to'lov baribir saqlanadi
+
+    # ── Notification: o'quvchi va ota-onaga to'lov tasdig'i ──
+    if tenant_slug:
+        from app.services.notification_service import NotificationService
+        svc = NotificationService(db, tenant_slug)
+        amount_str = f"{float(data.amount):,.0f}".replace(",", " ")
+        period_str = f"{data.period_month}/{data.period_year}" if data.period_month else ""
+        title = "💰 To'lov qabul qilindi"
+        body  = (
+            f"<b>{amount_str} so'm</b> miqdoridagi to'lovingiz qabul qilindi. "
+            f"Yangi balans: <b>{float(student.balance):,.0f}</b> so'm."
+        ).replace(",", " ")
+
+        if student.user_id:
+            await svc.enqueue(
+                user_id=student.user_id,
+                category="payment", type="payment_received", priority="normal",
+                title=title, body=body,
+                data={"payment_id": str(payment.id), "amount": float(data.amount),
+                      "balance": float(student.balance), "period": period_str},
+                dedupe_key=f"pay:{payment.id}:student",
+            )
+        if student.parent_id:
+            await svc.enqueue(
+                user_id=student.parent_id,
+                category="payment", type="payment_received_child", priority="normal",
+                title=title, body=body,
+                data={"student_id": str(student.id), "payment_id": str(payment.id),
+                      "amount": float(data.amount), "balance": float(student.balance)},
+                dedupe_key=f"pay:{payment.id}:parent",
+            )
 
     await db.commit()
     return {
