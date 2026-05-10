@@ -74,12 +74,17 @@ async def list_inspectors(
     db: AsyncSession         = Depends(get_tenant_session),
     _:  dict                 = Depends(require_admin),
 ):
-    # Multi-role: inspektor sifatida user_roles jadvalida aktiv yozuvi bor user'lar
-    stmt = (
-        select(User)
-        .join(UserRole, UserRole.user_id == User.id)
-        .where(UserRole.role == "inspector", UserRole.is_active == True)  # noqa: E712
-    )
+    # Multi-role: inspektor sifatida user_roles jadvalida aktiv yozuvi bor user'lar.
+    # Migratsiya 015 hali qo'llanmagan bo'lsa — legacy `users.role` bo'yicha ishlash.
+    from app.services.user_roles import _user_roles_table_exists
+    if await _user_roles_table_exists(db):
+        stmt = (
+            select(User)
+            .join(UserRole, UserRole.user_id == User.id)
+            .where(UserRole.role == "inspector", UserRole.is_active == True)  # noqa: E712
+        )
+    else:
+        stmt = select(User).where(User.role == "inspector")
     if is_active is not None:
         stmt = stmt.where(User.is_active == is_active)
     if search:
@@ -153,15 +158,21 @@ async def get_inspector(
     db: AsyncSession = Depends(get_tenant_session),
     _:  dict         = Depends(require_admin),
 ):
-    user = (await db.execute(
-        select(User)
-        .join(UserRole, UserRole.user_id == User.id)
-        .where(
-            User.id == inspector_id,
-            UserRole.role == "inspector",
-            UserRole.is_active == True,  # noqa: E712
-        )
-    )).scalar_one_or_none()
+    from app.services.user_roles import _user_roles_table_exists
+    if await _user_roles_table_exists(db):
+        user = (await db.execute(
+            select(User)
+            .join(UserRole, UserRole.user_id == User.id)
+            .where(
+                User.id == inspector_id,
+                UserRole.role == "inspector",
+                UserRole.is_active == True,  # noqa: E712
+            )
+        )).scalar_one_or_none()
+    else:
+        user = (await db.execute(
+            select(User).where(User.id == inspector_id, User.role == "inspector")
+        )).scalar_one_or_none()
     if not user:
         from app.core.exceptions import EduSaaSException
         raise EduSaaSException(404, "INSPECTOR_NOT_FOUND", "Inspektor topilmadi")
@@ -175,15 +186,21 @@ async def update_inspector(
     db:   AsyncSession = Depends(get_tenant_session),
     _:    dict         = Depends(require_admin),
 ):
-    user = (await db.execute(
-        select(User)
-        .join(UserRole, UserRole.user_id == User.id)
-        .where(
-            User.id == inspector_id,
-            UserRole.role == "inspector",
-            UserRole.is_active == True,  # noqa: E712
-        )
-    )).scalar_one_or_none()
+    from app.services.user_roles import _user_roles_table_exists
+    if await _user_roles_table_exists(db):
+        user = (await db.execute(
+            select(User)
+            .join(UserRole, UserRole.user_id == User.id)
+            .where(
+                User.id == inspector_id,
+                UserRole.role == "inspector",
+                UserRole.is_active == True,  # noqa: E712
+            )
+        )).scalar_one_or_none()
+    else:
+        user = (await db.execute(
+            select(User).where(User.id == inspector_id, User.role == "inspector")
+        )).scalar_one_or_none()
     if not user:
         from app.core.exceptions import EduSaaSException
         raise EduSaaSException(404, "INSPECTOR_NOT_FOUND", "Inspektor topilmadi")
@@ -241,15 +258,21 @@ async def generate_inspector_invite(
     from app.core.config import settings
     from app.core.invite_store import store_invite
 
-    user = (await db.execute(
-        select(User)
-        .join(UserRole, UserRole.user_id == User.id)
-        .where(
-            User.id == inspector_id,
-            UserRole.role == "inspector",
-            UserRole.is_active == True,  # noqa: E712
-        )
-    )).scalar_one_or_none()
+    from app.services.user_roles import _user_roles_table_exists
+    if await _user_roles_table_exists(db):
+        user = (await db.execute(
+            select(User)
+            .join(UserRole, UserRole.user_id == User.id)
+            .where(
+                User.id == inspector_id,
+                UserRole.role == "inspector",
+                UserRole.is_active == True,  # noqa: E712
+            )
+        )).scalar_one_or_none()
+    else:
+        user = (await db.execute(
+            select(User).where(User.id == inspector_id, User.role == "inspector")
+        )).scalar_one_or_none()
     if not user:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Inspektor topilmadi")

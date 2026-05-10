@@ -13,25 +13,42 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tenant import User, UserRole
 
 
+async def _user_roles_table_exists(db: AsyncSession) -> bool:
+    """Joriy schema'da `user_roles` jadvali mavjudligini tekshirish.
+    Migratsiya 015 qo'llanmagan tenant'lar uchun graceful fallback."""
+    try:
+        res = await db.execute(text("SELECT to_regclass('user_roles')"))
+        return res.scalar() is not None
+    except Exception:
+        return False
+
+
 async def list_active_roles(db: AsyncSession, user_id: uuid.UUID) -> list[str]:
     """Foydalanuvchining aktiv rollar ro'yxati. Default rol (users.role)
-    har doim qaytariladigan ro'yxatga qo'shiladi (legacy backfill kafolati)."""
-    rows = (await db.execute(
-        select(UserRole.role).where(
-            UserRole.user_id == user_id,
-            UserRole.is_active == True,  # noqa: E712
-        )
-    )).scalars().all()
-    roles = list(dict.fromkeys(rows))  # unique, tartibni saqlab
+    har doim qaytariladigan ro'yxatga qo'shiladi (legacy backfill kafolati).
+
+    Migratsiya 015 hali qo'llanmagan tenant'larda `user_roles` jadvali bo'lmasligi
+    mumkin — bu holatda jim ravishda legacy `users.role` ga qaytamiz, login
+    oqimi sinmaydi.
+    """
+    if not await _user_roles_table_exists(db):
+        roles: list[str] = []
+    else:
+        rows = (await db.execute(
+            select(UserRole.role).where(
+                UserRole.user_id == user_id,
+                UserRole.is_active == True,  # noqa: E712
+            )
+        )).scalars().all()
+        roles = list(dict.fromkeys(rows))
 
     if not roles:
-        # Legacy: user_roles bo'sh bo'lsa, users.role'dan oladi
         u = (await db.execute(
             select(User.role).where(User.id == user_id)
         )).scalar_one_or_none()
@@ -51,8 +68,12 @@ async def grant_role(
     role: str,
     branch_id: Optional[uuid.UUID] = None,
     granted_by: Optional[uuid.UUID] = None,
-) -> UserRole:
-    """Rolni qo'shish (idempotent)."""
+) -> Optional[UserRole]:
+    """Rolni qo'shish (idempotent). Jadval mavjud bo'lmasa — jim qaytamiz
+    (migratsiya hali qo'llanmagan bo'lsa, login/register oqimi sinmasin)."""
+    if not await _user_roles_table_exists(db):
+        return None
+
     existing = (await db.execute(
         select(UserRole).where(
             UserRole.user_id == user_id,
@@ -80,6 +101,8 @@ async def grant_role(
 async def revoke_role(db: AsyncSession, user_id: uuid.UUID, role: str) -> bool:
     """Rolni o'chirish (deaktivatsiya). Default users.role bo'lsa,
     boshqa aktiv rolga ko'chirib qo'yamiz (yo'q bo'lsa o'zgartirmaymiz)."""
+    if not await _user_roles_table_exists(db):
+        return False
     ur = (await db.execute(
         select(UserRole).where(
             UserRole.user_id == user_id,
