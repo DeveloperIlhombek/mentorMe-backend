@@ -39,6 +39,18 @@ _TENANT_TABLES_SQL = [
         updated_at               TIMESTAMPTZ DEFAULT NOW()
     )
     """,
+    # user_roles (015) — multi-role: bitta user bir nechta rolda
+    """
+    CREATE TABLE IF NOT EXISTS "{schema}".user_roles (
+        user_id    UUID NOT NULL REFERENCES "{schema}".users(id) ON DELETE CASCADE,
+        role       VARCHAR(20) NOT NULL,
+        branch_id  UUID NULL,
+        is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+        granted_by UUID NULL,
+        granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, role)
+    )
+    """,
     # branches
     """
     CREATE TABLE IF NOT EXISTS "{schema}".branches (
@@ -358,6 +370,27 @@ _ALTER_STATEMENTS = [
     'ALTER TABLE "{schema}".notifications ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0',
     'ALTER TABLE "{schema}".notifications ADD COLUMN IF NOT EXISTS dedupe_key VARCHAR(120)',
     'ALTER TABLE "{schema}".notifications ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ',
+    # 015 — user_roles (multi-role)
+    """
+    CREATE TABLE IF NOT EXISTS "{schema}".user_roles (
+        user_id    UUID NOT NULL REFERENCES "{schema}".users(id) ON DELETE CASCADE,
+        role       VARCHAR(20) NOT NULL,
+        branch_id  UUID NULL,
+        is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+        granted_by UUID NULL,
+        granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, role)
+    )
+    """,
+    'CREATE INDEX IF NOT EXISTS idx_user_roles_role_{schema_safe} ON "{schema}".user_roles(role)',
+    'CREATE INDEX IF NOT EXISTS idx_user_roles_user_active_{schema_safe} ON "{schema}".user_roles(user_id, is_active)',
+    # Backfill: mavjud users.role ni user_roles ga ko'chirish
+    """
+    INSERT INTO "{schema}".user_roles (user_id, role, branch_id, is_active)
+    SELECT id, role, branch_id, is_active FROM "{schema}".users
+    WHERE role IS NOT NULL
+    ON CONFLICT (user_id, role) DO NOTHING
+    """,
 ]
 
 
@@ -396,6 +429,15 @@ async def provision_tenant_schema(session: AsyncSession, schema: str) -> None:
         f'ON "{schema}".notifications(user_id, dedupe_key) '
         f'WHERE dedupe_key IS NOT NULL'
     ))
+    # user_roles indekslari (015)
+    await session.execute(text(
+        f'CREATE INDEX IF NOT EXISTS idx_user_roles_role_{schema_safe} '
+        f'ON "{schema}".user_roles(role)'
+    ))
+    await session.execute(text(
+        f'CREATE INDEX IF NOT EXISTS idx_user_roles_user_active_{schema_safe} '
+        f'ON "{schema}".user_roles(user_id, is_active)'
+    ))
     # Public schema (telegram_link_tokens) — 014
     for sql in _PUBLIC_DDL:
         await session.execute(text(sql))
@@ -425,8 +467,9 @@ async def upgrade_tenant_schema(session: AsyncSession, schema: str) -> dict:
             errors.append(f"CREATE: {str(e)[:120]}")
 
     # 2. ALTER statements — har bir statement o'z savepoint ida (bittasi xato bersa qolganlari ishlaydi)
+    schema_safe = schema.replace("-", "_")
     for stmt in _ALTER_STATEMENTS:
-        sql = stmt.format(schema=schema)
+        sql = stmt.format(schema=schema, schema_safe=schema_safe)
         try:
             async with session.begin_nested():
                 await session.execute(text(sql))

@@ -39,14 +39,17 @@ async def heal_tenant_schemas(engine: AsyncEngine) -> None:
                 return
 
             for schema in schemas:
+                schema_safe = schema.replace("-", "_")
                 applied = 0
                 for stmt_template in _ALTER_STATEMENTS:
-                    sql = stmt_template.format(schema=schema)
+                    sql = stmt_template.format(schema=schema, schema_safe=schema_safe)
                     try:
-                        await conn.execute(text(sql))
+                        # Har bir statement o'z savepoint ida — birortasi xato
+                        # bersa ham qolganlari bajariladi.
+                        async with conn.begin_nested():
+                            await conn.execute(text(sql))
                         applied += 1
                     except Exception as exc:
-                        # Jadval mavjud bo'lmasa yoki boshqa ahamiyatsiz xato — log debug.
                         log.debug(
                             "schema_heal: skip in %s: %s -> %s",
                             schema, sql[:100], exc,
