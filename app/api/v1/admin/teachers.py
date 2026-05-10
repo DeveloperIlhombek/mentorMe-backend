@@ -78,6 +78,8 @@ def _teacher_dict(teacher: Teacher, user: User) -> dict:
         "salary_type":      teacher.salary_type,
         "salary_amount":    float(teacher.salary_amount) if teacher.salary_amount is not None else None,
         "branch_id":        str(teacher.branch_id) if teacher.branch_id else None,
+        "telegram_id":      user.telegram_id,
+        "telegram_username":user.telegram_username,
         "hired_at":         hired_at.isoformat() if hired_at else None,
         "created_at":       created_at.isoformat() if created_at else None,
     }

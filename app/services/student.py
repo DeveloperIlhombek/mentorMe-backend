@@ -60,6 +60,17 @@ async def _row_to_dict(db: AsyncSession, student: Student, user: User) -> dict:
     )
     gam = (await db.execute(gam_stmt)).scalar_one_or_none()
 
+    # Ota-ona telegram statusi (parent_id orqali bog'langan bo'lsa)
+    parent_telegram_id: Optional[int] = None
+    parent_telegram_username: Optional[str] = None
+    if student.parent_id:
+        p = (await db.execute(
+            select(User).where(User.id == student.parent_id)
+        )).scalar_one_or_none()
+        if p:
+            parent_telegram_id = p.telegram_id
+            parent_telegram_username = p.telegram_username
+
     return {
         "id": str(student.id),
         "user_id": str(student.user_id),
@@ -68,6 +79,10 @@ async def _row_to_dict(db: AsyncSession, student: Student, user: User) -> dict:
         "phone": user.phone,
         "email": user.email,
         "telegram_id": user.telegram_id,
+        "telegram_username": user.telegram_username,
+        "parent_id": str(student.parent_id) if student.parent_id else None,
+        "parent_telegram_id": parent_telegram_id,
+        "parent_telegram_username": parent_telegram_username,
         "avatar_url": user.avatar_url,
         "language_code": user.language_code,
         "balance": float(student.balance),

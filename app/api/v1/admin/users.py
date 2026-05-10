@@ -140,6 +140,87 @@ async def attach_role(
     return ok(await _user_with_roles(db, user))
 
 
+class ChangeRoleRequest(BaseModel):
+    from_role: str
+    to_role:   str
+    branch_id: Optional[uuid.UUID] = None
+
+
+@router.post("/{user_id}/change-role")
+async def change_role(
+    user_id: uuid.UUID,
+    data:    ChangeRoleRequest,
+    db:      AsyncSession = Depends(get_tenant_session),
+    tkn:     dict         = Depends(require_admin),
+):
+    """
+    Foydalanuvchi rolini almashtirish (teacher ↔ inspector).
+    `from_role` deaktivatsiya qilinadi, `to_role` qo'shiladi.
+    `to_role == teacher` bo'lsa va Teacher profili yo'q bo'lsa — yaratiladi.
+    """
+    allowed = {"teacher", "inspector"}
+    if data.from_role not in allowed or data.to_role not in allowed:
+        raise EduSaaSException(400, "BAD_ROLE", "Faqat teacher↔inspector almashinuvi qo'llab-quvvatlanadi")
+    if data.from_role == data.to_role:
+        raise EduSaaSException(400, "SAME_ROLE", "Rollar bir xil")
+
+    caller_role = tkn.get("role", "")
+    if caller_role not in ("admin", "super_admin"):
+        raise EduSaaSException(403, "FORBIDDEN", "Faqat admin/super_admin")
+
+    user = (await db.execute(
+        select(User).where(User.id == user_id)
+    )).scalar_one_or_none()
+    if not user:
+        raise EduSaaSException(404, "USER_NOT_FOUND", "Foydalanuvchi topilmadi")
+
+    granted_by = uuid.UUID(tkn["sub"])
+
+    # 1. Eski rolni olib tashlash
+    await revoke_role(db, user.id, data.from_role)
+
+    # 2. Yangi rolni qo'shish
+    await grant_role(db, user.id, data.to_role, data.branch_id, granted_by)
+
+    # 3. Default users.role ni yangilash
+    user.role = data.to_role
+    if data.branch_id is not None:
+        user.branch_id = data.branch_id
+
+    # 4. Teacher profilini boshqarish
+    from app.models.tenant import Teacher
+    if data.to_role == "teacher":
+        existing = (await db.execute(
+            select(Teacher).where(Teacher.user_id == user.id)
+        )).scalar_one_or_none()
+        if existing:
+            existing.is_active   = True
+            existing.is_approved = True
+            if data.branch_id is not None:
+                existing.branch_id = data.branch_id
+        else:
+            db.add(Teacher(
+                user_id=user.id,
+                branch_id=data.branch_id,
+                is_active=True,
+                is_approved=True,
+                created_by=granted_by,
+                created_by_role=caller_role,
+            ))
+    elif data.from_role == "teacher":
+        # Teacher profilini deaktivatsiya qilish (saqlab qolamiz, salohiyat tarixi yo'qolmasin)
+        existing = (await db.execute(
+            select(Teacher).where(Teacher.user_id == user.id)
+        )).scalar_one_or_none()
+        if existing:
+            existing.is_active = False
+
+    user.is_active = True
+    await db.commit()
+    await db.refresh(user)
+    return ok(await _user_with_roles(db, user))
+
+
 @router.delete("/{user_id}/roles/{role}", status_code=204)
 async def detach_role(
     user_id: uuid.UUID,
