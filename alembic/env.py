@@ -41,6 +41,7 @@ config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 # Barcha modellar import qilinishi kerak
 from app.models.public.tenant import Tenant, SubscriptionPlan
 from app.models.tenant.user        import User
+from app.models.tenant.user_role   import UserRole
 from app.models.tenant.branch      import Branch
 from app.models.tenant.teacher     import Teacher
 from app.models.tenant.group       import Group

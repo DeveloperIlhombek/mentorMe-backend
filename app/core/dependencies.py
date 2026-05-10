@@ -72,9 +72,16 @@ async def get_tenant_session(
 
 
 def require_role(*roles: str):
-    """Role-based access control dependency factory."""
+    """Role-based access control dependency factory.
+
+    Multi-role qo'llab-quvvatlash: avval JWT'dagi aktiv `role`'ni tekshiradi,
+    keyin token'dagi `roles[]` ro'yxatini ham tekshiradi (foydalanuvchi
+    boshqa rolda kirgan bo'lsa-da, kerakli rolga egami).
+    """
     async def _check(token: Annotated[dict, Depends(get_current_token)]) -> dict:
-        if token.get("role") not in roles:
+        active = token.get("role")
+        token_roles = token.get("roles") or ([active] if active else [])
+        if not any(r in roles for r in token_roles):
             raise AuthInsufficientRole()
         return token
     return _check

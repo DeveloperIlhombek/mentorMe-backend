@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_tenant_session, require_admin
 from app.core.security import hash_password
-from app.models.tenant import Branch, User
+from app.models.tenant import Branch, User, UserRole
 from app.schemas import ok
+from app.services.user_roles import grant_role, list_active_roles
 
 router = APIRouter(prefix="/inspectors", tags=["inspectors"])
 
@@ -29,6 +30,9 @@ class InspectorCreate(BaseModel):
     phone:      Optional[str] = None
     email:      Optional[EmailStr] = None
     branch_id:  Optional[uuid.UUID] = None
+    # Mavjud user'ga inspektor rolini qo'shish uchun (ixtiyoriy).
+    # Berilsa — yangi user yaratilmaydi, faqat user_roles'ga yozuv qo'shiladi.
+    attach_to_user_id: Optional[uuid.UUID] = None
 
 
 class InspectorUpdate(BaseModel):
@@ -70,7 +74,12 @@ async def list_inspectors(
     db: AsyncSession         = Depends(get_tenant_session),
     _:  dict                 = Depends(require_admin),
 ):
-    stmt = select(User).where(User.role == "inspector")
+    # Multi-role: inspektor sifatida user_roles jadvalida aktiv yozuvi bor user'lar
+    stmt = (
+        select(User)
+        .join(UserRole, UserRole.user_id == User.id)
+        .where(UserRole.role == "inspector", UserRole.is_active == True)  # noqa: E712
+    )
     if is_active is not None:
         stmt = stmt.where(User.is_active == is_active)
     if search:
@@ -96,8 +105,30 @@ async def list_inspectors(
 async def create_inspector(
     data: InspectorCreate,
     db:   AsyncSession = Depends(get_tenant_session),
-    _:    dict         = Depends(require_admin),
+    tkn:  dict         = Depends(require_admin),
 ):
+    """
+    Inspektor yaratish.
+
+    Ikki rejim:
+      1. `attach_to_user_id` berilsa — mavjud user'ga inspektor rolini qo'shamiz
+         (yangi user yaratilmaydi, dublikat oldini olinadi).
+      2. Berilmasa — yangi user + inspector rol.
+    """
+    granted_by = uuid.UUID(tkn["sub"])
+
+    if data.attach_to_user_id:
+        user = (await db.execute(
+            select(User).where(User.id == data.attach_to_user_id)
+        )).scalar_one_or_none()
+        if not user:
+            from app.core.exceptions import EduSaaSException
+            raise EduSaaSException(404, "USER_NOT_FOUND", "Foydalanuvchi topilmadi")
+        await grant_role(db, user.id, "inspector", data.branch_id, granted_by)
+        await db.commit()
+        await db.refresh(user)
+        return ok(_user_dict(user), {"attached": True})
+
     user = User(
         first_name=data.first_name,
         last_name=data.last_name,
@@ -109,6 +140,8 @@ async def create_inspector(
         is_active=True,
     )
     db.add(user)
+    await db.flush()
+    await grant_role(db, user.id, "inspector", data.branch_id, granted_by)
     await db.commit()
     await db.refresh(user)
     return ok(_user_dict(user))
@@ -121,7 +154,13 @@ async def get_inspector(
     _:  dict         = Depends(require_admin),
 ):
     user = (await db.execute(
-        select(User).where(User.id == inspector_id, User.role == "inspector")
+        select(User)
+        .join(UserRole, UserRole.user_id == User.id)
+        .where(
+            User.id == inspector_id,
+            UserRole.role == "inspector",
+            UserRole.is_active == True,  # noqa: E712
+        )
     )).scalar_one_or_none()
     if not user:
         from app.core.exceptions import EduSaaSException
@@ -137,7 +176,13 @@ async def update_inspector(
     _:    dict         = Depends(require_admin),
 ):
     user = (await db.execute(
-        select(User).where(User.id == inspector_id, User.role == "inspector")
+        select(User)
+        .join(UserRole, UserRole.user_id == User.id)
+        .where(
+            User.id == inspector_id,
+            UserRole.role == "inspector",
+            UserRole.is_active == True,  # noqa: E712
+        )
     )).scalar_one_or_none()
     if not user:
         from app.core.exceptions import EduSaaSException
@@ -161,12 +206,25 @@ async def delete_inspector(
     db: AsyncSession = Depends(get_tenant_session),
     _:  dict         = Depends(require_admin),
 ):
+    """
+    Inspektorni 'o'chirish' — faqat inspektor rolini olib tashlaydi.
+    Agar user bir vaqtning o'zida o'qituvchi ham bo'lsa, uning teacher
+    profili saqlanib qoladi va u tizimdan o'chirilmaydi.
+    Faqat user'ning yagona roli inspektor bo'lsa, accountni deaktivatsiya qilamiz.
+    """
+    from app.services.user_roles import revoke_role, list_active_roles
+
     user = (await db.execute(
-        select(User).where(User.id == inspector_id, User.role == "inspector")
+        select(User).where(User.id == inspector_id)
     )).scalar_one_or_none()
-    if user:
+    if not user:
+        return
+
+    await revoke_role(db, user.id, "inspector")
+    remaining = await list_active_roles(db, user.id)
+    if not remaining:
         user.is_active = False
-        await db.commit()
+    await db.commit()
 
 
 @router.post("/{inspector_id}/generate-invite")
@@ -184,7 +242,13 @@ async def generate_inspector_invite(
     from app.core.invite_store import store_invite
 
     user = (await db.execute(
-        select(User).where(User.id == inspector_id, User.role == "inspector")
+        select(User)
+        .join(UserRole, UserRole.user_id == User.id)
+        .where(
+            User.id == inspector_id,
+            UserRole.role == "inspector",
+            UserRole.is_active == True,  # noqa: E712
+        )
     )).scalar_one_or_none()
     if not user:
         from fastapi import HTTPException

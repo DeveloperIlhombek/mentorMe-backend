@@ -7,6 +7,7 @@ Ishlatish:
     from app.models.tenant import User, Student, Group, Attendance
 """
 from app.models.tenant.user         import User
+from app.models.tenant.user_role    import UserRole
 from app.models.tenant.branch       import Branch
 from app.models.tenant.teacher      import Teacher
 from app.models.tenant.group        import Group
@@ -19,7 +20,7 @@ from app.models.tenant.notification_preference import NotificationPreference
 from app.models.tenant.broadcast_job           import BroadcastJob
 
 __all__ = [
-    "User", "Branch", "Teacher",
+    "User", "UserRole", "Branch", "Teacher",
     "Group", "Student", "StudentGroup",
     "Attendance", "Payment",
     "GamificationProfile", "XpTransaction", "Achievement", "StudentAchievement",

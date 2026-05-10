@@ -19,6 +19,7 @@ from app.api.v1.admin.invites import router as invites_router
 from app.api.v1.admin.students import router as students_router
 from app.api.v1.admin.teachers import router as teachers_router
 from app.api.v1.admin.trash import router as trash_router
+from app.api.v1.admin.users import router as users_router
 from app.api.v1.admin.progress import router as progress_router
 from app.api.v1.admin.lesson_cancellations import router as lesson_cancellations_router
 from app.api.v1.admin.assessment import router as admin_assessment_router
@@ -51,6 +52,7 @@ api_router.include_router(branches_router)
 api_router.include_router(kpi_router)
 api_router.include_router(marketing_router)
 api_router.include_router(trash_router)
+api_router.include_router(users_router)
 api_router.include_router(invites_router)
 api_router.include_router(progress_router)
 api_router.include_router(lesson_cancellations_router)

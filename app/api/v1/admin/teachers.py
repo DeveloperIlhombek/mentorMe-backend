@@ -17,6 +17,7 @@ from app.core.exceptions import StudentNotFound
 from app.core.security import hash_password
 from app.models.tenant import Branch, Teacher, User
 from app.schemas import ok
+from app.services.user_roles import grant_role
 
 router = APIRouter(prefix="/teachers", tags=["teachers"])
 
@@ -35,6 +36,8 @@ class TeacherCreate(BaseModel):
     salary_type:   Optional[str]  = None   # fixed | percent | per_lesson
     salary_amount: Optional[float] = None
     branch_id:     Optional[uuid.UUID] = None
+    # Mavjud user'ni o'qituvchi qilish uchun (multi-role).
+    attach_to_user_id: Optional[uuid.UUID] = None
 
 class TeacherUpdate(BaseModel):
     first_name:    Optional[str]  = None
@@ -128,20 +131,39 @@ async def create_teacher(
     # Inspector tomonidan yaratilsa — admin tasdiqlashini kutadi
     is_approved = caller_role in ("admin", "super_admin")
 
-    # User yaratish — pending bo'lsa is_active=False
-    user = User(
-        first_name=data.first_name,
-        last_name=data.last_name,
-        phone=data.phone,
-        email=data.email,
-        role="teacher",
-        password_hash=hash_password("Teacher123!"),
-        is_active=is_approved,  # Pending holatda login qila olmaydi
-    )
-    db.add(user)
-    await db.flush()
+    if data.attach_to_user_id:
+        # Mavjud user'ga teacher rolini qo'shish (multi-role)
+        user = (await db.execute(
+            select(User).where(User.id == data.attach_to_user_id)
+        )).scalar_one_or_none()
+        if not user:
+            from app.core.exceptions import EduSaaSException
+            raise EduSaaSException(404, "USER_NOT_FOUND", "Foydalanuvchi topilmadi")
 
-    # Teacher yaratish
+        # Teacher profili allaqachon bormi?
+        existing_teacher = (await db.execute(
+            select(Teacher).where(Teacher.user_id == user.id)
+        )).scalar_one_or_none()
+        if existing_teacher:
+            from app.core.exceptions import EduSaaSException
+            raise EduSaaSException(
+                409, "TEACHER_PROFILE_EXISTS",
+                "Bu foydalanuvchi allaqachon o'qituvchi",
+            )
+    else:
+        # Yangi user yaratish
+        user = User(
+            first_name=data.first_name,
+            last_name=data.last_name,
+            phone=data.phone,
+            email=data.email,
+            role="teacher",
+            password_hash=hash_password("Teacher123!"),
+            is_active=is_approved,
+        )
+        db.add(user)
+        await db.flush()
+
     teacher = Teacher(
         user_id=user.id,
         branch_id=data.branch_id,
@@ -154,9 +176,13 @@ async def create_teacher(
         created_by_role=caller_role,
     )
     db.add(teacher)
+    await grant_role(db, user.id, "teacher", data.branch_id, caller_id)
     await db.commit()
 
-    return ok(_teacher_dict(teacher, user), {"pending_approval": not is_approved})
+    return ok(_teacher_dict(teacher, user), {
+        "pending_approval": not is_approved,
+        "attached":         bool(data.attach_to_user_id),
+    })
 
 
 @router.get("/pending")

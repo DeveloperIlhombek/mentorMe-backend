@@ -75,11 +75,26 @@ async def _get_tenant_user_by_id(slug: str, user_id: uuid.UUID):
         return (await session.execute(stmt)).scalar_one_or_none()
 
 
-def _make_tokens(user: User, tenant_slug: str) -> dict:
-    """JWT access + refresh token yaratish."""
+def _make_tokens(
+    user: User,
+    tenant_slug: str,
+    roles: Optional[list[str]] = None,
+    active_role: Optional[str] = None,
+) -> dict:
+    """JWT access + refresh token yaratish.
+
+    `roles` — user'ning barcha aktiv rollar ro'yxati (multi-role).
+    `active_role` — joriy sessiyada qaysi rol sifatida ishlayotgani.
+    """
+    if roles is None:
+        roles = [user.role]
+    if active_role is None:
+        active_role = user.role if user.role in roles else (roles[0] if roles else user.role)
+
     payload = {
         "sub":         str(user.id),
-        "role":        user.role,
+        "role":        active_role,         # legacy — joriy aktiv rol
+        "roles":       roles,                # mavjud barcha rollar
         "tenant_slug": tenant_slug,
         "branch_id":   str(user.branch_id) if getattr(user, "branch_id", None) else None,
     }
@@ -90,10 +105,24 @@ def _make_tokens(user: User, tenant_slug: str) -> dict:
         "refresh_token": refresh,
         "token_type":    "bearer",
         "user_id":       str(user.id),
-        "role":          user.role,
+        "role":          active_role,
+        "roles":         roles,
         "tenant_slug":   tenant_slug,
         "branch_id":     str(user.branch_id) if getattr(user, "branch_id", None) else None,
     }
+
+
+async def _make_tokens_with_roles(
+    user: User, tenant_slug: str, active_role: Optional[str] = None,
+) -> dict:
+    """`_make_tokens` ning DB'ga so'rov qiluvchi versiyasi — barcha aktiv
+    rollarni `user_roles` jadvalidan oladi."""
+    schema = tenant_schema_name(tenant_slug)
+    async with AsyncSessionLocal() as session:
+        await session.execute(text(f'SET search_path TO "{schema}", public'))
+        from app.services.user_roles import list_active_roles
+        roles = await list_active_roles(session, user.id)
+    return _make_tokens(user, tenant_slug, roles=roles, active_role=active_role)
 
 
 def _ensure_active(user: User) -> None:
@@ -164,7 +193,7 @@ async def login(
     # Tenant mavjudligini tekshirish (qo'shimcha xavfsizlik)
     await _get_tenant(db, matched_slug)
 
-    return ok(_make_tokens(user, matched_slug))
+    return ok(await _make_tokens_with_roles(user, matched_slug))
 
 
 @router.post("/telegram")
@@ -219,7 +248,7 @@ async def telegram_login(
             }
         )
 
-    return ok(_make_tokens(user, data.tenant_slug))
+    return ok(await _make_tokens_with_roles(user, data.tenant_slug))
 
 
 @router.post("/refresh")
@@ -265,7 +294,10 @@ async def refresh_token(
     # Rotation: eski refresh tokenni blacklist'ga
     await blacklist_token(jti, int(payload.get("exp", 0)))
 
-    tokens = _make_tokens(user, tenant_slug)
+    # Aktiv rolni payload'dan saqlab qolamiz (foydalanuvchi rol almashtirgan
+    # bo'lishi mumkin), lekin u hali ham user'ning rollari ichida bo'lishi shart.
+    requested_active = payload.get("role")
+    tokens = await _make_tokens_with_roles(user, tenant_slug, active_role=requested_active)
     return ok(tokens)
 
 
@@ -297,13 +329,19 @@ async def get_me(
     if not user.is_active:
         raise AuthInsufficientRole()
 
+    from app.services.user_roles import list_active_roles
+    roles = await list_active_roles(db, user.id)
+    active_role = token.get("role") or user.role
+
     return ok({
         "id":                str(user.id),
         "first_name":        user.first_name,
         "last_name":         user.last_name,
         "email":             user.email,
         "phone":             user.phone,
-        "role":              user.role,
+        "role":              active_role,
+        "primary_role":      user.role,
+        "roles":             roles,
         "branch_id":         str(user.branch_id) if getattr(user, "branch_id", None) else None,
         "telegram_id":       user.telegram_id,
         "telegram_username": user.telegram_username,
@@ -313,6 +351,44 @@ async def get_me(
         "is_verified":       user.is_verified,
         "created_at":        user.created_at.isoformat() if user.created_at else None,
     })
+
+
+# ── Aktiv rolni almashtirish (multi-role) ─────────────────────────────
+
+class SwitchRoleRequest(BaseModel):
+    role: str
+
+
+@router.post("/switch-role")
+async def switch_role(
+    data:  SwitchRoleRequest,
+    token: dict         = Depends(get_current_token),
+    db:    AsyncSession = Depends(get_tenant_session),
+):
+    """
+    Bitta foydalanuvchi bir nechta rolda bo'lganida (masalan, ham o'qituvchi,
+    ham inspektor) aktiv rolni almashtiradi va yangi tokenlarni qaytaradi.
+    Eski tokenlarni invalidate qilish uchun blacklist'ga qo'shamiz.
+    """
+    from app.services.user_roles import list_active_roles
+
+    user_id = uuid.UUID(token["sub"])
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user or not user.is_active:
+        raise AuthTokenExpired()
+
+    roles = await list_active_roles(db, user.id)
+    if data.role not in roles:
+        raise AuthInsufficientRole()
+
+    # Eski access tokenni blacklist
+    jti = token.get("jti")
+    if jti:
+        await blacklist_token(jti, int(token.get("exp", 0)))
+
+    tenant_slug = token.get("tenant_slug")
+    tokens = _make_tokens(user, tenant_slug, roles=roles, active_role=data.role)
+    return ok(tokens)
 
 
 # ── Invite orqali ro'yxatdan o'tish ───────────────────────────────────
@@ -392,7 +468,11 @@ async def register_via_invite(
             await session.commit()
             await session.refresh(target_user)
         await delete_invite(data.tenant_slug, code)
-        return ok({**(_make_tokens(target_user, data.tenant_slug)), "is_new_user": False, "role": target_user.role})
+        return ok({
+            **(await _make_tokens_with_roles(target_user, data.tenant_slug)),
+            "is_new_user": False,
+            "role":        target_user.role,
+        })
 
     # rol va group_id ajratish
     if ":" in raw:
@@ -417,7 +497,10 @@ async def register_via_invite(
             await delete_invite(data.tenant_slug, code)
             if not existing.is_active:
                 raise AuthAccountInactive()
-            return ok({**(_make_tokens(existing, data.tenant_slug)), "is_new_user": False})
+            return ok({
+                **(await _make_tokens_with_roles(existing, data.tenant_slug)),
+                "is_new_user": False,
+            })
 
         # 5. Yangi foydalanuvchi yaratish
         first_name = data.first_name or tg_user.get("first_name", "")
@@ -452,9 +535,17 @@ async def register_via_invite(
 
         # parent — foydalanuvchi yaratiladi, farzand keyinchalik bog'lanadi
 
+        # Multi-role: yangi user uchun rolni user_roles'ga ham yozamiz
+        from app.services.user_roles import grant_role
+        await grant_role(session, user.id, role)
+
         await session.commit()
         await session.refresh(user)
 
     await delete_invite(data.tenant_slug, code)
 
-    return ok({**(_make_tokens(user, data.tenant_slug)), "is_new_user": True, "role": role})
+    return ok({
+        **(await _make_tokens_with_roles(user, data.tenant_slug)),
+        "is_new_user": True,
+        "role":        role,
+    })

@@ -264,27 +264,33 @@ _TENANT_TABLES_SQL = [
     # lesson_cancellations (011 + 012)
     """
     CREATE TABLE IF NOT EXISTS "{schema}".lesson_cancellations (
-        id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        teacher_id   UUID NOT NULL REFERENCES "{schema}".teachers(id),
-        group_id     UUID NOT NULL REFERENCES "{schema}".groups(id),
-        date         DATE NOT NULL,
-        reason       TEXT,
-        status       VARCHAR(20) NOT NULL DEFAULT 'pending',
-        reviewed_by  UUID NULL,
-        reviewed_at  TIMESTAMPTZ NULL,
-        created_at   TIMESTAMPTZ DEFAULT NOW()
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        group_id         UUID NOT NULL REFERENCES "{schema}".groups(id) ON DELETE CASCADE,
+        scope            VARCHAR(20)  NOT NULL DEFAULT 'group',
+        student_id       UUID         REFERENCES "{schema}".students(id) ON DELETE CASCADE,
+        lesson_date      DATE         NOT NULL,
+        reason           TEXT         NULL,
+        status           VARCHAR(20)  NOT NULL DEFAULT 'pending',
+        payment_adjusted BOOLEAN      NOT NULL DEFAULT FALSE,
+        created_by       UUID         REFERENCES "{schema}".users(id) ON DELETE SET NULL,
+        reviewed_by      UUID         NULL,
+        reviewed_at      TIMESTAMPTZ  NULL,
+        created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
     )
     """,
     # payment_adjustments (011)
     """
     CREATE TABLE IF NOT EXISTS "{schema}".payment_adjustments (
-        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        student_id  UUID NOT NULL REFERENCES "{schema}".students(id),
-        amount      DECIMAL(12,2) NOT NULL,
-        reason      VARCHAR(50),
-        note        TEXT,
-        created_by  UUID,
-        created_at  TIMESTAMPTZ DEFAULT NOW()
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        student_id       UUID NOT NULL REFERENCES "{schema}".students(id) ON DELETE CASCADE,
+        group_id         UUID         REFERENCES "{schema}".groups(id) ON DELETE SET NULL,
+        cancellation_id  UUID         REFERENCES "{schema}".lesson_cancellations(id) ON DELETE SET NULL,
+        adj_type         VARCHAR(20)  NOT NULL,
+        amount           NUMERIC(12,2) NOT NULL DEFAULT 0,
+        days_adjusted    NUMERIC(6,2)  NOT NULL DEFAULT 0,
+        note             TEXT         NULL,
+        created_by       UUID         REFERENCES "{schema}".users(id) ON DELETE SET NULL,
+        created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
     )
     """,
 ]
@@ -312,6 +318,31 @@ _ALTER_STATEMENTS = [
     "ALTER TABLE \"{schema}\".lesson_cancellations ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'pending'",
     'ALTER TABLE "{schema}".lesson_cancellations ADD COLUMN IF NOT EXISTS reviewed_by UUID NULL',
     'ALTER TABLE "{schema}".lesson_cancellations ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ NULL',
+    # 012-fix — yetishmayotgan ustunlarni qo'shish (eski noto'g'ri provisioning DDL natijasida)
+    "ALTER TABLE \"{schema}\".lesson_cancellations ADD COLUMN IF NOT EXISTS scope VARCHAR(20) NOT NULL DEFAULT 'group'",
+    'ALTER TABLE "{schema}".lesson_cancellations ADD COLUMN IF NOT EXISTS student_id UUID NULL',
+    'ALTER TABLE "{schema}".lesson_cancellations ADD COLUMN IF NOT EXISTS lesson_date DATE NULL',
+    'ALTER TABLE "{schema}".lesson_cancellations ADD COLUMN IF NOT EXISTS payment_adjusted BOOLEAN NOT NULL DEFAULT FALSE',
+    'ALTER TABLE "{schema}".lesson_cancellations ADD COLUMN IF NOT EXISTS created_by UUID NULL',
+    # eski "date"/"teacher_id" ustunlari mavjud bo'lsa, ularni mosaktiv qilamiz (DO blok — ustun bo'lmasa ham ishlaydi)
+    """DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = '{schema}' AND table_name = 'lesson_cancellations' AND column_name = 'date') THEN
+            EXECUTE 'UPDATE "{schema}".lesson_cancellations SET lesson_date = date WHERE lesson_date IS NULL AND date IS NOT NULL';
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = '{schema}' AND table_name = 'lesson_cancellations' AND column_name = 'teacher_id') THEN
+            EXECUTE 'ALTER TABLE "{schema}".lesson_cancellations ALTER COLUMN teacher_id DROP NOT NULL';
+        END IF;
+    END $$""",
+    # payment_adjustments — yetishmayotgan ustunlar
+    'ALTER TABLE "{schema}".payment_adjustments ADD COLUMN IF NOT EXISTS group_id UUID NULL',
+    'ALTER TABLE "{schema}".payment_adjustments ADD COLUMN IF NOT EXISTS cancellation_id UUID NULL',
+    "ALTER TABLE \"{schema}\".payment_adjustments ADD COLUMN IF NOT EXISTS adj_type VARCHAR(20) NOT NULL DEFAULT 'credit'",
+    'ALTER TABLE "{schema}".payment_adjustments ADD COLUMN IF NOT EXISTS days_adjusted NUMERIC(6,2) NOT NULL DEFAULT 0',
+    'ALTER TABLE "{schema}".payment_adjustments ALTER COLUMN amount SET DEFAULT 0',
+    'ALTER TABLE "{schema}".payment_adjustments ALTER COLUMN amount DROP NOT NULL',
     # 013
     'ALTER TABLE "{schema}".groups ADD COLUMN IF NOT EXISTS progress_deadline_day SMALLINT NOT NULL DEFAULT 25',
     'ALTER TABLE "{schema}".groups ADD COLUMN IF NOT EXISTS progress_deadline_hour SMALLINT NOT NULL DEFAULT 23',
@@ -393,11 +424,12 @@ async def upgrade_tenant_schema(session: AsyncSession, schema: str) -> dict:
         except Exception as e:
             errors.append(f"CREATE: {str(e)[:120]}")
 
-    # 2. ALTER statements
+    # 2. ALTER statements — har bir statement o'z savepoint ida (bittasi xato bersa qolganlari ishlaydi)
     for stmt in _ALTER_STATEMENTS:
         sql = stmt.format(schema=schema)
         try:
-            await session.execute(text(sql))
+            async with session.begin_nested():
+                await session.execute(text(sql))
             if "ADD COLUMN" in sql:
                 applied.append(sql.split("ADD COLUMN IF NOT EXISTS")[1].split()[0])
             else:
